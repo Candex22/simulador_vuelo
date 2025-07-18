@@ -1,320 +1,331 @@
-import gab.opencv.*; // Importa la librería OpenCV para Processing
-import processing.video.*; // Importa la librería de Video para la captura de cámara
-import java.util.Collections; // Para Collections.max/min si es necesario para ordenar puntos
+import gab.opencv.*;
+import processing.video.*;
+import java.util.List;
+import java.util.ArrayList;
 
+// Variables globales
 OpenCV opencv;
-Capture cam;
-
-// Para seguimiento y visualización
-PImage currentFrame;
-String gestureText = "Esperando mano...";
-
-// Variables para la lógica de seguimiento de manos 
-ArrayList<PVector> bufferCenter = new ArrayList<PVector>();
-ArrayList<PVector> bufferFingers = new ArrayList<PVector>();
-
-void settings() {
-  size(640, 480); // Establece una resolución común para la webcam
-}
+Capture video;
+PImage src, dst;
+ArrayList<Contour> contours;
+ArrayList<PVector> handDefects;
+ArrayList<PVector> fingerTips;
+PVector palmCenter;
+boolean handDetected = false;
 
 void setup() {
-  // Inicializa la captura de video
-  String[] cameras = Capture.list();
-  if (cameras.length == 0) {
-    println("No hay cámaras disponibles.");
-    exit();
-  } else {
-    println("Cámaras disponibles:");
-    for (int i = 0; i < cameras.length; i++) {
-      println(cameras[i]);
-    }
-    cam = new Capture(this, cameras[0]); // Usa la primera cámara encontrada
-    cam.start(); // Comienza la captura de frames
-  }
-
-  // Inicializa OpenCV con el contexto del sketch y las dimensiones deseadas
-  opencv = new OpenCV(this, width, height);
-
-  // Inicializa los buffers para suavizado
-  for (int i = 0; i < 7; i++) bufferCenter.add(new PVector());
-  for (int i = 0; i < 5; i++) bufferFingers.add(new PVector());
-
-  // Configura las propiedades de dibujo
-  smooth();
-  textSize(24);
-  textAlign(CENTER, CENTER);
+  size(1024, 768);
+  
+  // Inicializar cámara
+  video = new Capture(this, 1024, 768);
+  
+  // Inicializar OpenCV
+  opencv = new OpenCV(this, 1024, 768);
+  
+  // Inicializar listas
+  handDefects = new ArrayList<PVector>();
+  fingerTips = new ArrayList<PVector>();
+  
+  video.start();
 }
 
 void draw() {
-  if (cam.available()) {
-    cam.read(); // Lee un nuevo frame de la cámara
-    currentFrame = cam.get(); // Obtiene la PImage de la cámara
+  if (video.available()) {
+    video.read();
+    
+    // Procesar imagen para detectar mano
+    processHandDetection();
+    
+    // Mostrar imagen original
+    image(video, 0, 0);
+    
+    // Dibujar detecciones
+    drawHandDetection();
+    
+    // Mostrar información
+    displayInfo();
+  }
+}
 
-    // Establece la imagen de OpenCV al frame actual
-    opencv.loadImage(currentFrame);
+void processHandDetection() {
+  // Cargar imagen en OpenCV
+  opencv.loadImage(video);
+  
+  // Aplicar filtro de color para detectar piel
+  dst = skinDetection(opencv.getSnapshot());
+  
+  // Aplicar filtros morfológicos
+  opencv.loadImage(dst);
+  opencv.erode();
+  opencv.dilate();
+  
+  // Encontrar contornos
+  contours = opencv.findContours(false, true);
+  
+  // Procesar el contorno más grande (mano)
+  if (contours.size() > 0) {
+    Contour handContour = getLargestContour(contours);
+    
+    if (handContour != null && handContour.area() > 5000) {
+      handDetected = true;
+      
+      // Encontrar defectos de convexidad
+      handDefects = findConvexityDefects(handContour);
+      
+      // Calcular centro de la palma
+      palmCenter = calculatePalmCenter(handDefects);
+      
+      // Detectar puntas de dedos
+      fingerTips = detectFingerTips(handContour.getPoints(), palmCenter);
+    } else {
+      handDetected = false;
+    }
+  } else {
+    handDetected = false;
+  }
+}
 
-    // --- Cadena de Procesamiento de Imagen ---
+PImage skinDetection(PImage input) {
+  PImage result = createImage(input.width, input.height, RGB);
+  input.loadPixels();
+  result.loadPixels();
+  
+  for (int i = 0; i < input.pixels.length; i++) {
+    color c = input.pixels[i];
+    float r = red(c);
+    float g = green(c);
+    float b = blue(c);
+    
+    // Convertir a HSV
+    float[] hsv = rgbToHsv(r, g, b);
+    float h = hsv[0];
+    float s = hsv[1];
+    float v = hsv[2];
+    
+    // Filtro de piel en HSV
+    if ((h < 19 || h > 150) && s > 25 && s < 220 && v > 30) {
+      result.pixels[i] = color(255);
+    } else {
+      result.pixels[i] = color(0);
+    }
+  }
+  
+  result.updatePixels();
+  return result;
+}
 
-    // 1. Convierte a HSV para detección de piel
-    opencv.toHsv();
+float[] rgbToHsv(float r, float g, float b) {
+  r /= 255.0;
+  g /= 255.0;
+  b /= 255.0;
+  
+  float max = max(r, max(g, b));
+  float min = min(r, min(g, b));
+  float h, s, v = max;
+  
+  float d = max - min;
+  s = max == 0 ? 0 : d / max;
+  
+  if (max == min) {
+    h = 0;
+  } else {
+    if (max == r) {
+      h = (g - b) / d + (g < b ? 6 : 0);
+    } else if (max == g) {
+      h = (b - r) / d + 2;
+    } else {
+      h = (r - g) / d + 4;
+    }
+    h /= 6;
+  }
+  
+  return new float[]{h * 180, s * 255, v * 255};
+}
 
-    // 2. Detección de piel (rango HSV simplificado para tono de piel, ajustar según sea necesario)
-    // Este es un rango básico. La detección real de piel puede ser más compleja.
-    // H: 0-25 (tonos rojos/naranjas), S: 30-150 (saturación), V: 80-255 (brillo)
-    opencv.inRange(color(0, 30, 80), color(25, 150, 255));
+Contour getLargestContour(ArrayList<Contour> contours) {
+  Contour largest = null;
+  float maxArea = 0;
+  
+  for (Contour contour : contours) {
+    if (contour.area() > maxArea) {
+      maxArea = contour.area();
+      largest = contour;
+    }
+  }
+  
+  return largest;
+}
 
-    // 3. Operaciones morfológicas (erosionar y luego dilatar para reducción de ruido y rellenado de huecos)
-    opencv.erode();
-    opencv.erode(); // Aplica erosión dos veces para un efecto más fuerte
-    opencv.dilate();
-    opencv.dilate(); // Aplica dilatación dos veces para un efecto más fuerte
+ArrayList<PVector> findConvexityDefects(Contour contour) {
+  ArrayList<PVector> defects = new ArrayList<PVector>();
+  
+  // Simplificación: usar algunos puntos del contorno como defectos
+  ArrayList<PVector> points = contour.getPoints();
+  
+  if (points.size() > 10) {
+    // Tomar algunos puntos estratégicos como defectos potenciales
+    int step = points.size() / 8;
+    for (int i = 0; i < points.size(); i += step) {
+      defects.add(points.get(i));
+    }
+  }
+  
+  return defects;
+}
 
+PVector calculatePalmCenter(ArrayList<PVector> defects) {
+  if (defects.size() == 0) return new PVector(0, 0);
+  
+  float centerX = 0;
+  float centerY = 0;
+  
+  for (PVector defect : defects) {
+    centerX += defect.x;
+    centerY += defect.y;
+  }
+  
+  centerX /= defects.size();
+  centerY /= defects.size();
+  
+  return new PVector(centerX, centerY);
+}
 
-    // Muestra la máscara procesada (opcional, para depuración)
-    // image(opencv.get ); // Esto mostrará la máscara en blanco y negro
-
-    // 4. Encuentra contornos
-    // true para contornos externos, false para aproximación simple
-    ArrayList<Contour> contours = opencv.findContours(true, false);
-
-    PVector handCenter = new PVector(0, 0);
-    ArrayList<PVector> fingers = new ArrayList<PVector>();
-
-    // Procesa el contorno más grande
-    if (contours.size() > 0) {
-      Contour largestContour = null;
-      float maxArea = 0;
-      for (Contour c : contours) {
-        float area = c.area();
-        if (area > maxArea && area > 2000) { // Filtra por área mínima para evitar ruido pequeño
-          maxArea = area;
-          largestContour = c;
-        }
+ArrayList<PVector> detectFingerTips(ArrayList<PVector> contourPoints, PVector center) {
+  ArrayList<PVector> tips = new ArrayList<PVector>();
+  
+  if (contourPoints.size() < 10 || center == null) return tips;
+  
+  int interval = 55; // Intervalo para análisis de ángulos
+  
+  for (int i = 0; i < contourPoints.size(); i++) {
+    PVector current = contourPoints.get(i);
+    
+    // Obtener puntos anterior y siguiente
+    int prevIndex = (i - interval + contourPoints.size()) % contourPoints.size();
+    int nextIndex = (i + interval) % contourPoints.size();
+    
+    PVector prev = contourPoints.get(prevIndex);
+    PVector next = contourPoints.get(nextIndex);
+    
+    // Calcular ángulo
+    float angle = calculateAngle(prev, current, next);
+    
+    // Si el ángulo es agudo (posible punta de dedo)
+    if (angle < 60) {
+      float distToPrev = PVector.dist(current, prev);
+      float distToNext = PVector.dist(current, next);
+      float distToCenter = PVector.dist(current, center);
+      
+      // Verificar si es una punta válida
+      if (distToPrev > 20 && distToNext > 20 && distToCenter > 50) {
+        tips.add(current.copy());
       }
-
-      if (largestContour != null) {
-        // Dibuja el contorno principal (opcional)
-        noFill();
-        stroke(0, 255, 0);
-        strokeWeight(2);
-        largestContour.draw();
-
-        // Calcula el Casco Convexo y los Defectos de Convexidad
-        ArrayList<PVector> hullPoints = largestContour.convexHull();
-        ArrayList<PVector> defectPoints = largestContour.convexityDefects(hullPoints);
-
-        // Dibuja el Casco Convexo (opcional)
-        stroke(140, 140, 140);
-        if (hullPoints.size() > 1) {
-          for (int i = 0; i < hullPoints.size(); i++) {
-            PVector p1 = hullPoints.get(i);
-            PVector p2 = hullPoints.get((i + 1) % hullPoints.size());
-            line(p1.x, p1.y, p2.x, p2.y);
-          }
-        }
-
-        // Filtra los defectos y encuentra el centro de la palma
-        ArrayList<PVector> filteredDefects = new ArrayList<PVector>();
-        for (PVector d : defectPoints) {
-          // Es posible que necesites ajustar este umbral de profundidad
-          // El código Java original usaba buff[3]/256 > sogliaprofondita (donde sogliaprofondita era 5)
-          // La librería de Processing podría devolver una estructura diferente para los defectos.
-          // Para simplificar, simplemente agregaremos el punto si se considera un defecto.
-          // Es posible que necesites inspeccionar la estructura de defectPoints si esto no es preciso.
-          filteredDefects.add(d);
-          fill(0, 255, 0);
-          noStroke();
-          ellipse(d.x, d.y, 12, 12); // Dibuja los puntos de defecto
-        }
-
-        if (filteredDefects.size() > 0) {
-          handCenter = getMinEnclosingCircleCenter(filteredDefects);
-          handCenter = applyMovingAverage(bufferCenter, handCenter); // Suaviza el centro de la palma
-          fill(0, 0, 255);
-          ellipse(handCenter.x, handCenter.y, 6, 6); // Dibuja el centro de la palma
-        }
-
-        // Encuentra las puntas de los dedos (lógica simplificada)
-        // Este es un método común: encontrar puntos en el contorno que están lejos del centro de la palma
-        // y tienen un ángulo agudo.
-        ArrayList<PVector> rawFingerTips = new ArrayList<PVector>();
-        if (handCenter.x != 0 || handCenter.y != 0) {
-            int interval = 25; // Intervalo ajustado para Processing (imagen más pequeña)
-            ArrayList<PVector> contourPoints = largestContour.getPoints();
-
-            for (int i = 0; i < contourPoints.size(); i++) {
-                PVector vertex = contourPoints.get(i);
-                PVector prev, next;
-
-                // Maneja el ajuste alrededor de la lista de contornos
-                if (i - interval >= 0) {
-                    prev = contourPoints.get(i - interval);
-                } else {
-                    prev = contourPoints.get(contourPoints.size() + (i - interval));
-                }
-
-                if (i + interval < contourPoints.size()) {
-                    next = contourPoints.get(i + interval);
-                } else {
-                    next = contourPoints.get((i + interval) - contourPoints.size());
-                }
-
-                // Calcula el ángulo en el vértice (candidato a punta de dedo)
-                float angle = PVector.angleBetween(PVector.sub(vertex, next), PVector.sub(vertex, prev));
-                angle = degrees(angle); // Convierte radianes a grados
-
-                // Comprueba si el ángulo es lo suficientemente agudo para una punta de dedo
-                if (angle < 70) { // Umbral de ángulo para puntas de dedos (ajustar según sea necesario)
-                    // Comprueba si el candidato a punta de dedo está más lejos del centro de la palma que sus vecinos
-                    float distCenterVertex = PVector.dist(vertex, handCenter);
-                    float distCenterPrev = PVector.dist(prev, handCenter);
-                    float distCenterNext = PVector.dist(next, handCenter);
-
-                    if (distCenterVertex > distCenterPrev && distCenterVertex > distCenterNext) {
-                        rawFingerTips.add(vertex);
-                    }
-                }
-            }
-        }
-        
-        // Agrupa las puntas de los dedos crudas en dedos distintos (similar a tu método Java dita)
-        if (rawFingerTips.size() > 0) {
-            fingers = groupFingers(rawFingerTips, 20); // 20 es el umbral de distancia para agrupar puntos
-            if (fingers.size() > 0) {
-                // Aplica el promedio móvil al dedo principal si solo se detecta uno
-                if (fingers.size() == 1) {
-                    fingers.set(0, applyMovingAverage(bufferFingers, fingers.get(0)));
-                }
-
-                // Dibuja los dedos detectados y las líneas al centro de la palma
-                stroke(0, 255, 255);
-                strokeWeight(2);
-                for (PVector finger : fingers) {
-                    line(handCenter.x, handCenter.y, finger.x, finger.y);
-                    fill(255, 0, 255);
-                    noStroke();
-                    ellipse(finger.x, finger.y, 6, 6);
-                }
-            }
-        }
     }
-
-    // Actualiza el texto del gesto basándose en el número de dedos
-    updateGestureText(fingers.size());
   }
+  
+  // Filtrar puntas muy cercanas
+  return filterNearbyTips(tips);
+}
 
-  // Dibuja el frame actual (video original)
-  image(currentFrame, 0, 0);
+float calculateAngle(PVector p1, PVector p2, PVector p3) {
+  PVector v1 = PVector.sub(p3, p1);
+  PVector v2 = PVector.sub(p3, p2);
+  
+  float dot = PVector.dot(v1, v2);
+  float mag1 = v1.mag();
+  float mag2 = v2.mag();
+  
+  if (mag1 == 0 || mag2 == 0) return 180;
+  
+  float angle = acos(dot / (mag1 * mag2));
+  return degrees(angle);
+}
 
-  // Dibuja la máscara procesada superpuesta (para depuración, comentar en la versión final)
-  // tint(255, 100); // Hace la máscara semitransparente
-  // image(opencv.get, 0, 0);
-  // noTint();
+ArrayList<PVector> filterNearbyTips(ArrayList<PVector> tips) {
+  ArrayList<PVector> filtered = new ArrayList<PVector>();
+  
+  for (PVector tip : tips) {
+    boolean tooClose = false;
+    
+    for (PVector existing : filtered) {
+      if (PVector.dist(tip, existing) < 30) {
+        tooClose = true;
+        break;
+      }
+    }
+    
+    if (!tooClose) {
+      filtered.add(tip);
+    }
+  }
+  
+  return filtered;
+}
 
-  // Superpone el texto del gesto
+void drawHandDetection() {
+  if (!handDetected) return;
+  
+  // Dibujar área de trabajo
+  stroke(255, 0, 0);
+  strokeWeight(2);
+  noFill();
+  rect(150, 50, 580, 330);
+  
+  // Dibujar centro de la palma
+  if (palmCenter != null) {
+    fill(0, 0, 255);
+    noStroke();
+    ellipse(palmCenter.x, palmCenter.y, 8, 8);
+  }
+  
+  // Dibujar puntas de dedos
+  fill(255, 0, 255);
+  for (PVector tip : fingerTips) {
+    ellipse(tip.x, tip.y, 6, 6);
+    
+    // Línea del centro a la punta
+    if (palmCenter != null) {
+      stroke(0, 255, 255);
+      strokeWeight(3);
+      line(palmCenter.x, palmCenter.y, tip.x, tip.y);
+    }
+  }
+  
+  // Dibujar defectos de convexidad
+  fill(0, 255, 0);
+  noStroke();
+  for (PVector defect : handDefects) {
+    ellipse(defect.x, defect.y, 4, 4);
+  }
+}
+
+void displayInfo() {
   fill(200, 0, 0);
-  text(gestureText, width / 2, 30);
-}
-
-// Función personalizada para calcular el centro del círculo mínimo envolvente
-// Esta es una versión simplificada; minEnclosingCircle de OpenCV es más robusto
-PVector getMinEnclosingCircleCenter(ArrayList<PVector> points) {
-  if (points.isEmpty()) return new PVector(0, 0);
+  textSize(16);
   
-  // Promedio simple para demostración; un verdadero círculo mínimo envolvente es más complejo
-  PVector center = new PVector(0, 0);
-  for (PVector p : points) {
-    center.add(p);
-  }
-  center.div(points.size());
-  return center;
-}
-
-
-// Aplica un filtro de promedio móvil simple a un punto
-PVector applyMovingAverage(ArrayList<PVector> buffer, PVector current) {
-  if (current.x == 0 && current.y == 0) return buffer.get(0); // Si el punto actual es (0,0), devuelve el último válido
+  String status = handDetected ? "Mano detectada" : "Buscando mano...";
+  text(status, 50, 40);
   
-  for (int i = buffer.size() - 1; i > 0; i--) {
-    buffer.set(i, buffer.get(i - 1));
+  if (handDetected) {
+    text("Dedos detectados: " + fingerTips.size(), 50, 60);
+    
+    if (palmCenter != null) {
+      text("Centro palma: (" + int(palmCenter.x) + ", " + int(palmCenter.y) + ")", 50, 80);
+    }
   }
-  buffer.set(0, current);
-
-  PVector avg = new PVector(0, 0);
-  for (PVector p : buffer) {
-    avg.add(p);
-  }
-  avg.div(buffer.size());
-  return avg;
 }
 
-
-// Agrupa los candidatos a puntas de dedos crudas en dedos distintos
-ArrayList<PVector> groupFingers(ArrayList<PVector> rawFingerTips, float maxDistance) {
-    ArrayList<PVector> distinctFingers = new ArrayList<PVector>();
-    if (rawFingerTips.isEmpty()) return distinctFingers;
-
-    // Ordena los puntos por coordenada X para ayudar con el agrupamiento
-    Collections.sort(rawFingerTips, (p1, p2) -> Float.compare(p1.x, p2.x));
-
-    PVector currentGroupSum = new PVector();
-    int currentGroupCount = 0;
-
-    currentGroupSum.add(rawFingerTips.get(0));
-    currentGroupCount = 1;
-
-    for (int i = 1; i < rawFingerTips.size(); i++) {
-        PVector prevPoint = rawFingerTips.get(i-1);
-        PVector currentPoint = rawFingerTips.get(i);
-
-        if (PVector.dist(prevPoint, currentPoint) < maxDistance) {
-            currentGroupSum.add(currentPoint);
-            currentGroupCount++;
-        } else {
-            distinctFingers.add(PVector.div(currentGroupSum, currentGroupCount));
-            currentGroupSum = new PVector(currentPoint.x, currentPoint.y);
-            currentGroupCount = 1;
-        }
-    }
-    distinctFingers.add(PVector.div(currentGroupSum, currentGroupCount)); // Agrega el último grupo
-
-    // Maneja el posible "wrap-around" para el primer y último grupo si están muy cerca
-    if (distinctFingers.size() > 1) {
-        PVector first = distinctFingers.get(0);
-        PVector last = distinctFingers.get(distinctFingers.size() - 1);
-        if (PVector.dist(first, last) < maxDistance) {
-            PVector merged = PVector.add(first, last).div(2);
-            distinctFingers.set(0, merged);
-            distinctFingers.remove(distinctFingers.size() - 1);
-        }
-    }
-
-    return distinctFingers;
+// Función para obtener el número de dedos detectados
+int getFingerCount() {
+  return handDetected ? fingerTips.size() : 0;
 }
 
+// Función para obtener la posición del centro de la palma
+PVector getPalmCenter() {
+  return palmCenter != null ? palmCenter.copy() : new PVector(0, 0);
+}
 
-void updateGestureText(int numFingers) {
-  switch (numFingers) {
-    case 0:
-      gestureText = "Puño / No se detecta mano";
-      break;
-    case 1:
-      gestureText = "Un Dedo (Puntero)";
-      break;
-    case 2:
-      gestureText = "Dos Dedos";
-      break;
-    case 3:
-      gestureText = "Tres Dedos";
-      break;
-    case 4:
-      gestureText = "Cuatro Dedos";
-      break;
-    case 5:
-      gestureText = "Cinco Dedos (Mano Abierta)";
-      break;
-    default:
-      gestureText = "Reconociendo...";
-      break;
-  }
+// Función para obtener las posiciones de las puntas de los dedos
+ArrayList<PVector> getFingerTips() {
+  return new ArrayList<PVector>(fingerTips);
 }
