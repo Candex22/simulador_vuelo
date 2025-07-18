@@ -6,86 +6,131 @@ import java.util.ArrayList;
 // Variables globales
 OpenCV opencv;
 Capture video;
-PImage src, dst;
+PImage processedImage;
 ArrayList<Contour> contours;
-ArrayList<PVector> handDefects;
-ArrayList<PVector> fingerTips;
-PVector palmCenter;
 boolean handDetected = false;
+int frameCount = 0;
+boolean showProcessed = false;
+
+// Variables de detección
+PVector palmCenter;
+ArrayList<PVector> fingerTips;
+Contour handContour;
 
 void setup() {
-  size(1024, 768);
+  size(1200, 400);
   
-  // Inicializar cámara
-  video = new Capture(this, 1024, 768);
+  // Inicializar cámara con configuración específica
+  String[] cameras = Capture.list();
+  if (cameras.length == 0) {
+    println("No hay cámaras disponibles");
+    exit();
+  } else {
+    println("Cámaras disponibles:");
+    for (int i = 0; i < cameras.length; i++) {
+      println(i + ": " + cameras[i]);
+    }
+  }
+  
+  // Usar la primera cámara disponible
+  video = new Capture(this, 640, 480);
+  video.start();
   
   // Inicializar OpenCV
-  opencv = new OpenCV(this, 1024, 768);
+  opencv = new OpenCV(this, 640, 480);
   
-  // Inicializar listas
-  handDefects = new ArrayList<PVector>();
+  // Inicializar variables
   fingerTips = new ArrayList<PVector>();
+  contours = new ArrayList<Contour>();
   
-  video.start();
+  // Configurar fuente para evitar warnings
+  textFont(createFont("Arial", 16, true));
+  
+  println("Setup completado");
 }
 
 void draw() {
+  background(0);
+  
+  // Solo procesar si hay nueva imagen disponible
   if (video.available()) {
     video.read();
-    
-    // Procesar imagen para detectar mano
-    processHandDetection();
-    
-    // Mostrar imagen original
-    image(video, 0, 0);
-    
-    // Dibujar detecciones
-    drawHandDetection();
-    
-    // Mostrar información
-    displayInfo();
   }
-}
+  
+  // SIEMPRE mostrar la imagen de la cámara, independientemente del procesamiento
+  if (video.width > 0) {
+    image(video, 0, 0);
+  }
+  
+  // Procesar cada 5 frames para mejor rendimiento (menos frecuente)
+  if (frameCount % 5 == 0 && video.width > 0) {
+    processHandDetection();
+  }
+  frameCount++;
+  
+  // Mostrar imagen procesada si está habilitada
+  if (showProcessed && processedImage != null) {
+    image(processedImage, 640, 0);
+  }
+  
+  // SIEMPRE dibujar las detecciones (usando los últimos datos calculados)
+  drawHandDetection();
+  
+  // Mostrar información
+  displayInfo();
+} // <- FALTABA ESTA LLAVE
 
 void processHandDetection() {
-  // Cargar imagen en OpenCV
-  opencv.loadImage(video);
-  
-  // Aplicar filtro de color para detectar piel
-  dst = skinDetection(opencv.getSnapshot());
-  
-  // Aplicar filtros morfológicos
-  opencv.loadImage(dst);
-  opencv.erode();
-  opencv.dilate();
-  
-  // Encontrar contornos
-  contours = opencv.findContours(false, true);
-  
-  // Procesar el contorno más grande (mano)
-  if (contours.size() > 0) {
-    Contour handContour = getLargestContour(contours);
+  try {
+    // Crear una copia de la imagen para no interferir con la visualización
+    PImage tempImage = video.copy();
     
-    if (handContour != null && handContour.area() > 5000) {
-      handDetected = true;
-      
-      // Encontrar defectos de convexidad
-      handDefects = findConvexityDefects(handContour);
-      
-      // Calcular centro de la palma
-      palmCenter = calculatePalmCenter(handDefects);
-      
-      // Detectar puntas de dedos
-      fingerTips = detectFingerTips(handContour.getPoints(), palmCenter);
-    } else {
-      handDetected = false;
+    // Aplicar filtro de piel
+    processedImage = applySkinFilter(tempImage);
+    
+    // Cargar imagen filtrada en OpenCV y convertir a escala de grises
+    opencv.loadImage(processedImage);
+    opencv.gray();
+    
+    // Aplicar operaciones morfológicas básicas
+    opencv.erode();
+    opencv.dilate();
+    opencv.dilate();
+    
+    // Obtener imagen procesada final para mostrar
+    if (showProcessed) {
+      processedImage = opencv.getSnapshot();
     }
-  } else {
+    
+    // Encontrar contornos
+    contours = opencv.findContours(false, true);
+    
+    // Resetear detección
     handDetected = false;
+    handContour = null;
+    
+    // Buscar el contorno más grande
+    if (contours.size() > 0) {
+      handContour = getLargestContour(contours);
+      
+      // Verificar si es lo suficientemente grande para ser una mano
+      if (handContour != null && handContour.area() > 3000) {
+        handDetected = true;
+        
+        // Calcular centro simple
+        palmCenter = calculateSimpleCenter(handContour);
+        
+        // Detectar dedos de forma simple
+        fingerTips = detectFingersSimple(handContour);
+      }
+    }
+    
+  } catch (Exception e) {
+    println("Error en procesamiento: " + e.getMessage());
   }
 }
 
-PImage skinDetection(PImage input) {
+PImage applySkinFilter(PImage input) {
   PImage result = createImage(input.width, input.height, RGB);
   input.loadPixels();
   result.loadPixels();
@@ -96,55 +141,35 @@ PImage skinDetection(PImage input) {
     float g = green(c);
     float b = blue(c);
     
-    // Convertir a HSV
-    float[] hsv = rgbToHsv(r, g, b);
-    float h = hsv[0];
-    float s = hsv[1];
-    float v = hsv[2];
+    // Filtro de piel RGB simple pero efectivo
+    boolean isSkin = false;
     
-    // Filtro de piel en HSV
-    if ((h < 19 || h > 150) && s > 25 && s < 220 && v > 30) {
-      result.pixels[i] = color(255);
-    } else {
-      result.pixels[i] = color(0);
+    if (r > 95 && g > 40 && b > 20 && 
+        r > g && r > b && 
+        (r - g) > 15 && 
+        (r - b) > 15) {
+      isSkin = true;
     }
+    
+    // Filtro adicional para tonos más oscuros
+    if (r > 60 && g > 30 && b > 15 && 
+        r > g && r > b && 
+        (r - g) > 10) {
+      isSkin = true;
+    }
+    
+    result.pixels[i] = isSkin ? color(255) : color(0);
   }
   
   result.updatePixels();
   return result;
 }
 
-float[] rgbToHsv(float r, float g, float b) {
-  r /= 255.0;
-  g /= 255.0;
-  b /= 255.0;
-  
-  float max = max(r, max(g, b));
-  float min = min(r, min(g, b));
-  float h, s, v = max;
-  
-  float d = max - min;
-  s = max == 0 ? 0 : d / max;
-  
-  if (max == min) {
-    h = 0;
-  } else {
-    if (max == r) {
-      h = (g - b) / d + (g < b ? 6 : 0);
-    } else if (max == g) {
-      h = (b - r) / d + 2;
-    } else {
-      h = (r - g) / d + 4;
-    }
-    h /= 6;
-  }
-  
-  return new float[]{h * 180, s * 255, v * 255};
-}
-
 Contour getLargestContour(ArrayList<Contour> contours) {
-  Contour largest = null;
-  float maxArea = 0;
+  if (contours.size() == 0) return null;
+  
+  Contour largest = contours.get(0);
+  float maxArea = largest.area();
   
   for (Contour contour : contours) {
     if (contour.area() > maxArea) {
@@ -156,176 +181,136 @@ Contour getLargestContour(ArrayList<Contour> contours) {
   return largest;
 }
 
-ArrayList<PVector> findConvexityDefects(Contour contour) {
-  ArrayList<PVector> defects = new ArrayList<PVector>();
+PVector calculateSimpleCenter(Contour contour) {
+  ArrayList<PVector> points = contour.getPoints();
+  if (points.size() == 0) return new PVector(0, 0);
   
-  // Simplificación: usar algunos puntos del contorno como defectos
+  float sumX = 0, sumY = 0;
+  
+  for (PVector point : points) {
+    sumX += point.x;
+    sumY += point.y;
+  }
+  
+  return new PVector(sumX / points.size(), sumY / points.size());
+}
+
+ArrayList<PVector> detectFingersSimple(Contour contour) {
+  ArrayList<PVector> tips = new ArrayList<PVector>();
   ArrayList<PVector> points = contour.getPoints();
   
-  if (points.size() > 10) {
-    // Tomar algunos puntos estratégicos como defectos potenciales
-    int step = points.size() / 8;
-    for (int i = 0; i < points.size(); i += step) {
-      defects.add(points.get(i));
-    }
-  }
+  if (points.size() < 50) return tips;
   
-  return defects;
-}
-
-PVector calculatePalmCenter(ArrayList<PVector> defects) {
-  if (defects.size() == 0) return new PVector(0, 0);
-  
-  float centerX = 0;
-  float centerY = 0;
-  
-  for (PVector defect : defects) {
-    centerX += defect.x;
-    centerY += defect.y;
-  }
-  
-  centerX /= defects.size();
-  centerY /= defects.size();
-  
-  return new PVector(centerX, centerY);
-}
-
-ArrayList<PVector> detectFingerTips(ArrayList<PVector> contourPoints, PVector center) {
-  ArrayList<PVector> tips = new ArrayList<PVector>();
-  
-  if (contourPoints.size() < 10 || center == null) return tips;
-  
-  int interval = 55; // Intervalo para análisis de ángulos
-  
-  for (int i = 0; i < contourPoints.size(); i++) {
-    PVector current = contourPoints.get(i);
+  // Buscar puntos que estén lejos del centro
+  for (int i = 0; i < points.size(); i += 10) {
+    PVector point = points.get(i);
+    float distToCenter = PVector.dist(point, palmCenter);
     
-    // Obtener puntos anterior y siguiente
-    int prevIndex = (i - interval + contourPoints.size()) % contourPoints.size();
-    int nextIndex = (i + interval) % contourPoints.size();
-    
-    PVector prev = contourPoints.get(prevIndex);
-    PVector next = contourPoints.get(nextIndex);
-    
-    // Calcular ángulo
-    float angle = calculateAngle(prev, current, next);
-    
-    // Si el ángulo es agudo (posible punta de dedo)
-    if (angle < 60) {
-      float distToPrev = PVector.dist(current, prev);
-      float distToNext = PVector.dist(current, next);
-      float distToCenter = PVector.dist(current, center);
+    // Si está lejos del centro, podría ser un dedo
+    if (distToCenter > 60) {
+      // Verificar que no esté muy cerca de otro tip ya encontrado
+      boolean farFromOthers = true;
+      for (PVector existing : tips) {
+        if (PVector.dist(point, existing) < 50) {
+          farFromOthers = false;
+          break;
+        }
+      }
       
-      // Verificar si es una punta válida
-      if (distToPrev > 20 && distToNext > 20 && distToCenter > 50) {
-        tips.add(current.copy());
+      if (farFromOthers) {
+        tips.add(point.copy());
       }
     }
   }
   
-  // Filtrar puntas muy cercanas
-  return filterNearbyTips(tips);
-}
-
-float calculateAngle(PVector p1, PVector p2, PVector p3) {
-  PVector v1 = PVector.sub(p3, p1);
-  PVector v2 = PVector.sub(p3, p2);
-  
-  float dot = PVector.dot(v1, v2);
-  float mag1 = v1.mag();
-  float mag2 = v2.mag();
-  
-  if (mag1 == 0 || mag2 == 0) return 180;
-  
-  float angle = acos(dot / (mag1 * mag2));
-  return degrees(angle);
-}
-
-ArrayList<PVector> filterNearbyTips(ArrayList<PVector> tips) {
-  ArrayList<PVector> filtered = new ArrayList<PVector>();
-  
-  for (PVector tip : tips) {
-    boolean tooClose = false;
-    
-    for (PVector existing : filtered) {
-      if (PVector.dist(tip, existing) < 30) {
-        tooClose = true;
-        break;
-      }
-    }
-    
-    if (!tooClose) {
-      filtered.add(tip);
-    }
+  // Limitar a máximo 5 dedos
+  while (tips.size() > 5) {
+    tips.remove(tips.size() - 1);
   }
   
-  return filtered;
+  return tips;
 }
 
 void drawHandDetection() {
-  if (!handDetected) return;
+  // Dibujar contorno principal si existe
+  if (handContour != null) {
+    stroke(0, 255, 0);
+    strokeWeight(2);
+    noFill();
+    handContour.draw();
+  }
   
-  // Dibujar área de trabajo
-  stroke(255, 0, 0);
-  strokeWeight(2);
-  noFill();
-  rect(150, 50, 580, 330);
+  if (!handDetected) return;
   
   // Dibujar centro de la palma
   if (palmCenter != null) {
-    fill(0, 0, 255);
+    fill(255, 0, 0);
     noStroke();
-    ellipse(palmCenter.x, palmCenter.y, 8, 8);
+    ellipse(palmCenter.x, palmCenter.y, 15, 15);
   }
   
   // Dibujar puntas de dedos
-  fill(255, 0, 255);
+  fill(0, 255, 255);
+  noStroke();
   for (PVector tip : fingerTips) {
-    ellipse(tip.x, tip.y, 6, 6);
+    ellipse(tip.x, tip.y, 12, 12);
     
     // Línea del centro a la punta
     if (palmCenter != null) {
-      stroke(0, 255, 255);
-      strokeWeight(3);
+      stroke(255, 255, 0);
+      strokeWeight(2);
       line(palmCenter.x, palmCenter.y, tip.x, tip.y);
     }
-  }
-  
-  // Dibujar defectos de convexidad
-  fill(0, 255, 0);
-  noStroke();
-  for (PVector defect : handDefects) {
-    ellipse(defect.x, defect.y, 4, 4);
   }
 }
 
 void displayInfo() {
-  fill(200, 0, 0);
+  // Fondo semitransparente para mejor legibilidad
+  fill(0, 0, 0, 150);
+  noStroke();
+  rect(5, 5, 300, 140);
+  
+  fill(255);
   textSize(16);
   
-  String status = handDetected ? "Mano detectada" : "Buscando mano...";
-  text(status, 50, 40);
+  // Estado de la detección
+  String status = handDetected ? "✓ Mano detectada" : "✗ Buscando mano...";
+  text(status, 10, 30);
+  
+  // Información de contornos
+  text("Contornos: " + contours.size(), 10, 50);
+  
+  if (handContour != null) {
+    text("Área: " + int(handContour.area()), 10, 70);
+  }
   
   if (handDetected) {
-    text("Dedos detectados: " + fingerTips.size(), 50, 60);
+    text("Dedos: " + fingerTips.size(), 10, 90);
     
     if (palmCenter != null) {
-      text("Centro palma: (" + int(palmCenter.x) + ", " + int(palmCenter.y) + ")", 50, 80);
+      text("Centro: (" + int(palmCenter.x) + ", " + int(palmCenter.y) + ")", 10, 110);
     }
+  }
+  
+  // Controles
+  text("'P' = mostrar imagen procesada | FPS: " + int(frameRate), 10, 130);
+}
+
+void keyPressed() {
+  if (key == 'P' || key == 'p') {
+    showProcessed = !showProcessed;
   }
 }
 
-// Función para obtener el número de dedos detectados
+// Funciones de utilidad
 int getFingerCount() {
   return handDetected ? fingerTips.size() : 0;
 }
 
-// Función para obtener la posición del centro de la palma
 PVector getPalmCenter() {
   return palmCenter != null ? palmCenter.copy() : new PVector(0, 0);
 }
 
-// Función para obtener las posiciones de las puntas de los dedos
 ArrayList<PVector> getFingerTips() {
   return new ArrayList<PVector>(fingerTips);
 }
