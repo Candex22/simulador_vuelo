@@ -481,7 +481,6 @@ fill(255, 255, 255, 220); // gris-azulado con algo de transparencia
     float ang = atan2(camX - c.x, camZ - c.z);
     rotateY(ang);
     
-    // 👉 Apagás luces SOLO para la nube
     noLights();  
     noStroke();
     fill(255, 255, 255, 180);
@@ -517,3 +516,4 @@ void keyReleased(){
   if (key == 'q' || key == 'Q') moveUp = false;
   if (key == 'e' || key == 'E') moveDown = false;
 }
+
