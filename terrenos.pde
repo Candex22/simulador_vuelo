@@ -1,352 +1,519 @@
 import java.util.ArrayList;
 import java.util.HashMap;
 
-// Cámara
+// ===================== Cámara =====================
 float camX = 0, camY = 300, camZ = 0;
-float camSpeed = 5;
+float camSpeed = 6;
 float yaw = 0, pitch = 0;
 float sensitivity = 0.005;
 float cameraGroundOffset = 5;
 
-// Movimiento
+// Teclas
 boolean moveForward = false, moveBackward = false;
 boolean moveLeft = false, moveRight = false;
 boolean moveUp = false, moveDown = false;
 
-// Mundo
+// ===================== Mundo =====================
 int chunkSize = 500;
 int worldSize = 2000;
-int seed = 0;
+int seed = 12345;
+
 HashMap<String, ArrayList<PVector>> treesPerChunk = new HashMap<String, ArrayList<PVector>>();
 HashMap<String, ArrayList<PVector>> buildingsPerChunk = new HashMap<String, ArrayList<PVector>>();
-HashMap<String, Integer> chunkTypes = new HashMap<String, Integer>();
+HashMap<String, Integer> chunkTypes = new HashMap<String, Integer>(); // 0=pradera,1=ciudad,2=montaña
+
 float gridSize = 40;
 float noiseScale = 0.01;
-float terrainHeightScale = 20; // Terreno plano
-float mountainHeightScale = 150; // Montaña más alta
+float terrainHeightScale = 22;
+float mountainHeightScale = 160;
 
-void setup() {
+// Ciudad
+float cityBaseY = 11;      // Terreno plano bajo la ciudad (constante)
+float roadWidth = 40;
+float sidewalkWidth = 10;
+float sidewalkHeight = 0.1;
+
+// Hitboxes edificios
+class AABB {
+  float minX, minY, minZ, maxX, maxY, maxZ;
+  AABB(float minX, float minY, float minZ, float maxX, float maxY, float maxZ){
+    this.minX=minX; this.minY=minY; this.minZ=minZ;
+    this.maxX=maxX; this.maxY=maxY; this.maxZ=maxZ;
+  }
+  boolean contains(float x, float y, float z){
+    return (x>=minX && x<=maxX && y>=minY && y<=maxY && z>=minZ && z<=maxZ);
+  }
+}
+HashMap<String, ArrayList<AABB>> aabbsPerChunk = new HashMap<String, ArrayList<AABB>>();
+
+// Nubes
+ArrayList<PVector> clouds = new ArrayList<PVector>();
+int cloudCount = 60;
+float cloudY = 260;
+
+// ===================== Util =====================
+String keyOf(int cx, int cz){ return cx + "," + cz; }
+
+float hash2i(int x, int y){
+  int h = x * 374761393 + y * 668265263; // 32-bit mix
+  h = (h ^ (h >> 13)) * 1274126177;
+  h ^= (h >> 16);
+  // [0,1)
+  return (h & 0x7fffffff) / (float)0x80000000;
+}
+
+float smoothstep(float a, float b, float x){
+  x = constrain((x-a)/(b-a), 0, 1);
+  return x*x*(3-2*x);
+}
+
+float length2(float x, float z){ return sqrt(x*x+z*z); }
+
+// ===================== Setup/Draw =====================
+void setup(){
   size(800, 600, P3D);
   perspective(PI / 3.0, float(width) / height, 0.1, 10000);
   noiseSeed(seed);
-}
 
-void draw() {
-  background(135, 206, 235);
-  updateCamera();
-  applyCamera();
-  int chunkX = floor(camX / chunkSize);
-  int chunkZ = floor(camZ / chunkSize);
-  int viewRange = 2;
-  for (int dx = -viewRange; dx <= viewRange; dx++) {
-    for (int dz = -viewRange; dz <= viewRange; dz++) {
-      drawChunk(chunkX + dx, chunkZ + dz);
-    }
+  // Nubes: posiciones aleatorias amplias, sin colisión
+  for (int i=0;i<cloudCount;i++){
+    float x = random(-2000, 2000);
+    float z = random(-2000, 2000);
+    clouds.add(new PVector(x, cloudY + random(-10, 10), z));
   }
 }
 
-void updateCamera() {
-  yaw += (mouseX - pmouseX) * sensitivity;
-  pitch -= (mouseY - pmouseY) * sensitivity;
-  pitch = constrain(pitch, -PI / 2 + 0.1, PI / 2 - 0.1);
-  float lookX = cos(yaw) * cos(pitch);
-  float lookY = sin(pitch);
-  float lookZ = sin(yaw) * cos(pitch);
-  if (moveForward) { camX += lookX * camSpeed; camZ += lookZ * camSpeed; }
-  if (moveBackward) { camX -= lookX * camSpeed; camZ -= lookZ * camSpeed; }
-  float strafeX = cos(yaw + PI / 2);
-  float strafeZ = sin(yaw + PI / 2);
-  if (moveLeft) { camX -= strafeX * camSpeed; camZ -= strafeZ * camSpeed; }
-  if (moveRight) { camX += strafeX * camSpeed; camZ += strafeZ * camSpeed; }
-  if (moveUp) camY += camSpeed;
-  if (moveDown) camY -= camSpeed;
-  float groundY = getTerrainHeight(camX, camZ);
-  if (camY < groundY + cameraGroundOffset) camY = groundY + cameraGroundOffset;
+void draw(){
+  background(135,206,235);
+
+  updateCamera();
+  applyCamera();
+
+  int chunkX = floor(camX / chunkSize);
+  int chunkZ = floor(camZ / chunkSize);
+  int viewRange = 2;
+
+  // Terreno + contenido
+  for (int dx = -viewRange; dx <= viewRange; dx++){
+    for (int dz = -viewRange; dz <= viewRange; dz++){
+      drawChunk(chunkX + dx, chunkZ + dz);
+    }
+  }
+
+  // Nubes (al final, transparentes y billboard)
+  drawClouds();
 }
 
-void applyCamera() {
+// ===================== Cámara =====================
+void updateCamera(){
+  yaw += (mouseX - pmouseX) * sensitivity;
+  pitch -= (mouseY - pmouseY) * sensitivity;
+  pitch = constrain(pitch, -PI/2 + 0.1, PI/2 - 0.1);
+
+  // Direcciones
+  float lx = cos(yaw) * cos(pitch);
+  float ly = sin(pitch);
+  float lz = sin(yaw) * cos(pitch);
+  float rightX = cos(yaw + PI/2.0);
+  float rightZ = sin(yaw + PI/2.0);
+
+  // Movimiento combinado + normalizado (strafe + avance + vertical)
+  PVector mv = new PVector(0,0,0);
+  if (moveForward) { mv.x += lx; mv.y += ly*0.0; mv.z += lz; }
+  if (moveBackward){ mv.x -= lx; mv.y -= ly*0.0; mv.z -= lz; }
+  if (moveRight)   { mv.x += rightX; mv.z += rightZ; }
+  if (moveLeft)    { mv.x -= rightX; mv.z -= rightZ; }
+  if (mv.mag() > 0) mv.normalize().mult(camSpeed);
+
+  // Vertical independiente
+  if (moveUp)   mv.y += camSpeed;
+  if (moveDown) mv.y -= camSpeed;
+
+  // Aplicar
+  camX += mv.x;
+  camY += mv.y;
+  camZ += mv.z;
+
+  // Colisión con terreno
+  float groundY = getTerrainHeight(camX, camZ);
+  if (camY < groundY + cameraGroundOffset) camY = groundY + cameraGroundOffset;
+
+  // Colisión con edificios (AABB)
+  resolveBuildingCollision();
+}
+
+void applyCamera(){
   float lookX = cos(yaw) * cos(pitch);
   float lookY = sin(pitch);
   float lookZ = sin(yaw) * cos(pitch);
   camera(camX, camY, camZ, camX + lookX, camY + lookY, camZ + lookZ, 0, -1, 0);
-  directionalLight(255, 255, 255, 0, -1, 0);
+  directionalLight(255,255,255, 0, -1, 0);
 }
 
-float getTerrainHeight(float x, float z) {
-  int chunkX = floor(x / chunkSize);
-  int chunkZ = floor(z / chunkSize);
-  int chunkType = getChunkType(chunkX, chunkZ);
-  
-  if (chunkType == 2) { // Montaña
-    float distance = dist(x, z, chunkX * chunkSize + chunkSize / 2, chunkZ * chunkSize + chunkSize / 2);
-    float maxDistance = chunkSize * 0.5;
-    float slopeFactor = constrain(1 - distance / maxDistance, 0, 1); // Gradual slope
-    return noise(x * noiseScale + seed * 100, z * noiseScale + seed * 100) * mountainHeightScale * slopeFactor * 1.5 + terrainHeightScale * 2;
-  } else if (chunkType == 1) { // Ciudad: terreno plano
-    return terrainHeightScale * 0.5; // Terreno más bajo para evitar solapamiento
-  } else {
-    return noise(x * noiseScale + seed * 100, z * noiseScale + seed * 100) * terrainHeightScale;
+// ===================== Biomas y alturas =====================
+// Tipos de chunk deterministas + exclusión de ciudades alrededor de montañas
+int getChunkType(int cx, int cz){
+  String k = keyOf(cx,cz);
+  if (chunkTypes.containsKey(k)) return chunkTypes.get(k);
+
+  // Base determinista (ruido + hash)
+  float r = 0.65*noise((cx+seed)*0.17, (cz-seed)*0.17) + 0.35*hash2i(cx,cz);
+
+  int type;
+  if (r > 0.78)      type = 2; // montaña
+  else if (r > 0.10) type = 1; // ciudad
+  else               type = 0; // pradera
+
+  // Si es montaña, evitar ciudades pegadas (4-neighborhood)
+  if (type == 2){
+    // etiquetar vecinos como pradera (salvo otras montañas)
+    int[][] nbs = {{1,0},{-1,0},{0,1},{0,-1}};
+    for (int i=0;i<nbs.length;i++){
+      int nx=cx+nbs[i][0], nz=cz+nbs[i][1];
+      String nk = keyOf(nx,nz);
+      if (!chunkTypes.containsKey(nk)){
+        float rr = 0.65*noise((nx+seed)*0.17, (nz-seed)*0.17) + 0.35*hash2i(nx,nz);
+        int t2 = (rr > 0.78) ? 2 : 0; // vecino solo montaña o pradera, no ciudad
+        chunkTypes.put(nk, t2);
+      } else {
+        if (chunkTypes.get(nk) == 1) chunkTypes.put(nk, 0);
+      }
+    }
   }
-}
 
-int getChunkType(int cx, int cz) {
-  String key = cx + "," + cz;
-  if (chunkTypes.containsKey(key)) return chunkTypes.get(key);
-  float r = random(1);
-  int type = 0;
-  if (r < 0.1) type = 2;       // Montaña
-  else if (r < 0.4) type = 1;  // Ciudad
-  else type = 0;               // Pradera
-  chunkTypes.put(key, type);
+  chunkTypes.put(k, type);
   return type;
 }
 
-void drawChunk(int cx, int cz) {
+// Altura con máscara suave para montaña; ciudad plana
+float getTerrainHeight(float x, float z){
+  int cx = floor(x / chunkSize);
+  int cz = floor(z / chunkSize);
+  int ct = getChunkType(cx, cz);
+
+  if (ct == 1){
+    return cityBaseY; // piso plano para ciudad
+  } else if (ct == 2){
+    // Centro del chunk para una “cúpula” suave
+    float centerX = cx*chunkSize + chunkSize*0.5;
+    float centerZ = cz*chunkSize + chunkSize*0.5;
+    float d = dist(x, z, centerX, centerZ);
+    float r0 = chunkSize*0.42;     // radio completo
+    float r1 = chunkSize*0.52;     // cola de desvanecimiento
+    float mask = 1.0 - smoothstep(r0, r1, d);  // 1 en el centro, 0 en borde/afuera
+
+    float base = noise(x*noiseScale + seed*100, z*noiseScale + seed*100) * terrainHeightScale * 0.55;
+    float peak = noise(x*noiseScale*0.6 + 999, z*noiseScale*0.6 + 999) * mountainHeightScale;
+    float h = base + peak * mask + 8*mask; // leve pedestal
+
+    // Transición adicional si vecino es pradera/ciudad (borde más gentil)
+    return h;
+  } else {
+    return noise(x*noiseScale + seed*100, z*noiseScale + seed*100) * terrainHeightScale;
+  }
+}
+
+// ===================== Rutas/edificios: lógica única =====================
+// Calles a cada 200, con 40 de asfalto + 10 de acera por lado (60 total)
+boolean isRoadLocal(float localX, float localZ){
+  // verticales
+  for (int rx = 0; rx <= chunkSize; rx += 200){
+    if (abs(localX - rx) <= (roadWidth/2 + sidewalkWidth)) return true;
+  }
+  // horizontales
+  for (int rz = 0; rz <= chunkSize; rz += 200){
+    if (abs(localZ - rz) <= (roadWidth/2 + sidewalkWidth)) return true;
+  }
+  return false;
+}
+
+boolean isInsideBuildingFootprint(float localX, float localZ){
+  // edificios 60x60 centrados en celdas (100,100), (300,100), ...
+  for (int i = 100; i < chunkSize; i += 200){
+    for (int j = 100; j < chunkSize; j += 200){
+      float cx = i + 10 + 30; // +10 del offset original, centro de 60x60
+      float cz = j + 10 + 30;
+      if (abs(localX - cx) < 35 && abs(localZ - cz) < 35) return true;
+    }
+  }
+  return false;
+}
+
+// ===================== Dibujo de chunk =====================
+void drawChunk(int cx, int cz){
   float baseX = cx * chunkSize;
   float baseZ = cz * chunkSize;
-  String key = cx + "," + cz;
+  String key = keyOf(cx, cz);
   int type = getChunkType(cx, cz);
-  drawTerrain(baseX, baseZ);
-  drawPradera(baseX, baseZ, key);
+
+  drawTerrain(baseX, baseZ, type);
+
+  // Pradera: sólo árboles (ya no se “cuelan” en ciudad/calles)
+  if (type != 2) drawPradera(baseX, baseZ, key, type);
+
   if (type == 1) drawCiudad(baseX, baseZ, key);
 }
 
-void drawTerrain(float baseX, float baseZ) {
-  int chunkX = floor(baseX / chunkSize);
-  int chunkZ = floor(baseZ / chunkSize);
-  int chunkType = getChunkType(chunkX, chunkZ);
-  
-  if (chunkType == 2) {
-    fill(139, 137, 137); // Gris montaña
-  } else {
-    fill(34, 139, 34); // Verde pradera
-  }
-  
-  stroke(0, 80, 0, 50);
-  for (float x = baseX; x < baseX + chunkSize; x += gridSize) {
-    for (float z = baseZ; z < baseZ + chunkSize; z += gridSize) {
+void drawTerrain(float baseX, float baseZ, int type){
+  // Color según bioma (montaña grisácea)
+  if (type == 2) fill(139,137,137);
+  else if (type == 1) fill(80, 120, 80); // debajo de ciudad, oscuro discreto
+  else fill(34,139,34);
+
+  stroke(0,80,0,50);
+  for (float x = baseX; x < baseX + chunkSize; x += gridSize){
+    for (float z = baseZ; z < baseZ + chunkSize; z += gridSize){
       float y1 = getTerrainHeight(x, z);
       float y2 = getTerrainHeight(x + gridSize, z);
       float y3 = getTerrainHeight(x + gridSize, z + gridSize);
       float y4 = getTerrainHeight(x, z + gridSize);
       beginShape(QUADS);
-      vertex(x, y1, z);
-      vertex(x + gridSize, y2, z);
-      vertex(x + gridSize, y3, z + gridSize);
-      vertex(x, y4, z + gridSize);
+      vertex(x,           y1, z);
+      vertex(x+gridSize,  y2, z);
+      vertex(x+gridSize,  y3, z+gridSize);
+      vertex(x,           y4, z+gridSize);
       endShape();
     }
   }
   noStroke();
 }
 
-// Función auxiliar para verificar si una posición está en una calle o edificio
-boolean isValidTreePosition(float localX, float localZ) {
-  // CALLES: Las calles están en i=0, 200, 400... y j=0, 200, 400...
-  // Cada calle tiene 40 de asfalto + 10 de acera a cada lado = 60 total
-  
-  // Verificar calles verticales (en X)
-  for (int roadX = 0; roadX <= 500; roadX += 200) {
-    if (abs(localX - roadX) <= 30) { // 30 = mitad del ancho total (60/2)
-      return false; // Está en una calle vertical
-    }
-  }
-  
-  // Verificar calles horizontales (en Z)
-  for (int roadZ = 0; roadZ <= 500; roadZ += 200) {
-    if (abs(localZ - roadZ) <= 30) { // 30 = mitad del ancho total (60/2)
-      return false; // Está en una calle horizontal
-    }
-  }
-  
-  // EDIFICIOS: Verificar si está en el área de un edificio
-  // Los edificios están en una grilla de 100x100, saltando donde hay calles
-  int gridX = (int)(localX / 100);
-  int gridZ = (int)(localZ / 100);
-  
-  // Los edificios están en las posiciones que no son múltiplos de 2 (para evitar calles)
-  if (gridX % 2 == 1 && gridZ % 2 == 1) {
-    // Calcular el centro del edificio en esta grilla
-    float buildingCenterX = (gridX * 100) + 50;
-    float buildingCenterZ = (gridZ * 100) + 50;
-    
-    // Verificar si está dentro del área del edificio (60x60 con margen)
-    if (abs(localX - buildingCenterX) < 35 && abs(localZ - buildingCenterZ) < 35) {
-      return false; // Está dentro de un edificio
-    }
-  }
-  
-  return true; // Posición válida para árbol
-}
+void drawPradera(float baseX, float baseZ, String chunkKey, int chunkType){
+  ArrayList<PVector> trees;
+  if (treesPerChunk.containsKey(chunkKey)){
+    trees = treesPerChunk.get(chunkKey);
+  } else {
+    trees = new ArrayList<PVector>();
+    int attempts = 0, maxAttempts = 120;
+    while (trees.size() < 10 && attempts < maxAttempts){
+      float x = baseX + random(0, chunkSize);
+      float z = baseZ + random(0, chunkSize);
+      float y = getTerrainHeight(x, z);
 
-void drawPradera(float baseX, float baseZ, String chunkKey) {
-  int chunkX = floor(baseX / chunkSize);
-  int chunkZ = floor(baseZ / chunkSize);
-  int chunkType = getChunkType(chunkX, chunkZ);
-  
-  if (chunkType != 2) {
-    ArrayList<PVector> trees;
-    if (treesPerChunk.containsKey(chunkKey)) {
-      trees = treesPerChunk.get(chunkKey);
-    } else {
-      trees = new ArrayList<PVector>();
-      int attempts = 0;
-      int maxAttempts = 50; // Evitar bucle infinito
-      
-      while (trees.size() < 8 && attempts < maxAttempts) {
-        float x = baseX + random(0, chunkSize);
-        float z = baseZ + random(0, chunkSize);
-        float y = getTerrainHeight(x, z);
-        
-        // Evitar árboles en las calles y edificios
-        if (chunkType == 1) {
-          float localX = x - baseX;
-          float localZ = z - baseZ;
-          
-          // Usar la función auxiliar para verificar si es una posición válida
-          if (!isValidTreePosition(localX, localZ)) {
-            attempts++;
-            continue; // Saltar esta posición
-          }
+      if (chunkType == 1){
+        // Si es chunk ciudad, prohibir árboles en rutas y edificios
+        float lx = x - baseX;
+        float lz = z - baseZ;
+        if (isRoadLocal(lx, lz) || isInsideBuildingFootprint(lx, lz)){
+          attempts++; continue;
         }
-        
-        trees.add(new PVector(x, y, z));
-        attempts++;
       }
-      treesPerChunk.put(chunkKey, trees);
+      trees.add(new PVector(x, y, z));
+      attempts++;
     }
-    
-    for (PVector tree : trees) {
-      pushMatrix();
-      translate(tree.x, tree.y, tree.z);
-      fill(139, 69, 19); // Tronco
-      box(10, 40, 10); // Tronco desde y hasta y+40
-      translate(0, 40, 0); // Mover al tope del tronco
-      fill(0, 128, 0); // Follaje
-      sphere(25); // Follaje encima del tronco
-      popMatrix();
-    }
+    treesPerChunk.put(chunkKey, trees);
+  }
+
+  // Dibujo árboles
+  for (PVector t : trees){
+    pushMatrix();
+    translate(t.x, t.y, t.z);
+    // Tronco
+    fill(139,69,19);
+    box(10, 40, 10);
+    // Copa
+    translate(0, 40, 0);
+    fill(0,128,0);
+    sphere(25);
+    popMatrix();
   }
 }
 
-void drawCiudad(float baseX, float baseZ, String chunkKey) {
+void drawCiudad(float baseX, float baseZ, String chunkKey){
   ArrayList<PVector> buildings;
-  if (buildingsPerChunk.containsKey(chunkKey)) {
+  ArrayList<AABB> aabbs;
+
+  if (buildingsPerChunk.containsKey(chunkKey)){
     buildings = buildingsPerChunk.get(chunkKey);
+    aabbs = aabbsPerChunk.get(chunkKey);
   } else {
     buildings = new ArrayList<PVector>();
-    int grid = 100;
-    for (int i = 100; i < chunkSize; i += 200) { // Empezar en 100, saltar de 200 en 200
-      for (int j = 100; j < chunkSize; j += 200) {
-        // Crear edificios en las posiciones impares de la grilla
-        float x = baseX + i + 10;
-        float z = baseZ + j + 10;
-        float y = getTerrainHeight(x, z);
+    aabbs = new ArrayList<AABB>();
+
+    // Colocar edificios en celdas, fuera de calles
+    for (int i = 100; i < chunkSize; i += 200){
+      for (int j = 100; j < chunkSize; j += 200){
+        float lx = i + 10 + 30;  // centro local
+        float lz = j + 10 + 30;
+        float x = baseX + lx;
+        float z = baseZ + lz;
+        float y = cityBaseY;
+
         buildings.add(new PVector(x, y, z));
+
+        float h = 110 + (int)(noise(x * 0.01, z * 0.01) * 70);
+        // AABB para colisión
+        AABB box = new AABB(
+          x - 30, y, z - 30,
+          x + 30, y + h, z + 30
+        );
+        aabbs.add(box);
       }
     }
     buildingsPerChunk.put(chunkKey, buildings);
+    aabbsPerChunk.put(chunkKey, aabbs);
   }
-  for (PVector b : buildings) {
-    float h = 100 + (int)(noise(b.x * 0.01, b.z * 0.01) * 60);
+
+  // Asfalto continuo (vertical + horizontal), leve offset para evitar z-fighting
+  float yRoad = cityBaseY + 1;
+
+  // Verticales
+  fill(40, 40, 40);
+  for (int rx = 0; rx <= chunkSize; rx += 200){
+    fill(40, 40, 40);
     pushMatrix();
-    translate(b.x, b.y + h / 2, b.z);
-    fill(100); box(60, h, 60);
+    translate(baseX + rx, yRoad, baseZ + chunkSize/2);
+    box(roadWidth, 1, chunkSize);
+    popMatrix();
+
+    // Aceras a ambos lados (continuas)
+    fill(150);
+    pushMatrix();
+    translate(baseX + rx - roadWidth/2 - sidewalkWidth/2, yRoad + sidewalkHeight/2, baseZ + chunkSize/2);
+    box(sidewalkWidth, sidewalkHeight, chunkSize);
+    popMatrix();
+    pushMatrix();
+    translate(baseX + rx + roadWidth/2 + sidewalkWidth/2, yRoad + sidewalkHeight/2, baseZ + chunkSize/2);
+    box(sidewalkWidth, sidewalkHeight, chunkSize);
+    popMatrix();
+
+    // Línea discontinua central
+    for (float z = 0; z < chunkSize; z += 40){
+      fill(255,255,0);
+      pushMatrix();
+      translate(baseX + rx, yRoad + 0.7, baseZ + z + 10);
+      box(4, 0.2, 20);
+      popMatrix();
+    }
+  }
+
+  // Horizontales
+  fill(40, 40, 40);
+  for (int rz = 0; rz <= chunkSize; rz += 200){
+    fill(40, 40, 40);
+    pushMatrix();
+    translate(baseX + chunkSize/2, yRoad, baseZ + rz);
+    box(chunkSize, 1, roadWidth);
+    popMatrix();
+
+    // Aceras a ambos lados
+    fill(150);
+    pushMatrix();
+    translate(baseX + chunkSize/2, yRoad + sidewalkHeight/2, baseZ + rz - roadWidth/2 - sidewalkWidth/2);
+    box(chunkSize, sidewalkHeight, sidewalkWidth);
+    popMatrix();
+    pushMatrix();
+    translate(baseX + chunkSize/2, yRoad + sidewalkHeight/2, baseZ + rz + roadWidth/2 + sidewalkWidth/2);
+    box(chunkSize, sidewalkHeight, sidewalkWidth);
+    popMatrix();
+
+    // Línea discontinua central
+    for (float x = 0; x < chunkSize; x += 40){
+      fill(255, 255, 0);
+      pushMatrix();
+      translate(baseX + x + 10, yRoad + 0.7, baseZ + rz);
+      box(20, 0.2, 4);
+      popMatrix();
+    }
+  }
+
+  // Edificios (transparencia si cámara cerca)
+  for (int i=0; i<buildings.size(); i++){
+    PVector b = buildings.get(i);
+    float h = 110 + (int)(noise(b.x * 0.01, b.z * 0.01) * 70);
+    float distToCam = dist(b.x, b.z, camX, camZ);
+    boolean near = distToCam < 80;
+
+    pushMatrix();
+    translate(b.x, b.y + h/2.0, b.z);
+    // Semitransparente cuando estás MUY cerca (para “ver a través”)
+    if (near){
+      fill(100, 180); // alpha
+    } else {
+      fill(100);
+    }
+    box(60, h, 60);
     popMatrix();
   }
-  
-  // Calles con aceras y líneas discontinuas
-  float roadWidth = 40;
-  float sidewalkWidth = 10;
-  float sidewalkHeight = 2;
-  
-  // Calles verticales (asfalto, aceras y líneas)
-  fill(0); // Asfalto negro
-  stroke(100);
-  for (int i = 0; i <= chunkSize; i += 200) {
-    for (float j = 0; j < chunkSize; j += 20) {
-      float x = baseX + i;
-      float z = baseZ + j;
-      float y = getTerrainHeight(x, z) + 0.5; // Elevar asfalto
-      // Asfalto
-      fill(0);
-      pushMatrix();
-      translate(x, y, z);
-      box(roadWidth, 1, 20);
-      popMatrix();
-      // Aceras
-      fill(150); // Gris acera
-      pushMatrix();
-      translate(x - roadWidth / 2 - sidewalkWidth / 2, y + sidewalkHeight / 2, z);
-      box(sidewalkWidth, sidewalkHeight, 20);
-      popMatrix();
-      pushMatrix();
-      translate(x + roadWidth / 2 + sidewalkWidth / 2, y + sidewalkHeight / 2, z);
-      box(sidewalkWidth, sidewalkHeight, 20);
-      popMatrix();
-      // Líneas discontinuas
-      fill(255, 255, 0); // Amarillo para líneas
-      if (j % 40 < 20) { // Espaciado para líneas discontinuas
-        pushMatrix();
-        translate(x, y + 1.0, z); // Elevar más las líneas
-        box(4, 0.2, 10);
-        popMatrix();
-      }
-      fill(0); // Restaurar color asfalto para el próximo ciclo
-    }
-  }
-  
-  // Calles horizontales (asfalto, aceras y líneas)
-  fill(0); // Asfalto negro
-  for (int j = 0; j <= chunkSize; j += 200) {
-    for (float i = 0; i < chunkSize; i += 20) {
-      float x = baseX + i;
-      float z = baseZ + j;
-      float y = getTerrainHeight(x, z) + 0.5; // Elevar asfalto
-      // Asfalto
-      fill(0);
-      pushMatrix();
-      translate(x, y, z);
-      box(20, 1, roadWidth);
-      popMatrix();
-      // Aceras
-      fill(150); // Gris acera
-      pushMatrix();
-      translate(x, y + sidewalkHeight / 2, z - roadWidth / 2 + sidewalkWidth / 2);
-      box(20, sidewalkHeight, sidewalkWidth);
-      popMatrix();
-      pushMatrix();
-      translate(x, y + sidewalkHeight / 2, z + roadWidth / 2 + sidewalkWidth / 2);
-      box(20, sidewalkHeight, sidewalkWidth);
-      popMatrix();
-      // Líneas discontinuas
-      fill(255, 255, 0); // Amarillo para líneas
-      if (i % 40 < 20) { // Espaciado para líneas discontinuas
-        pushMatrix();
-        translate(x, y + 1.0, z); // Elevar más las líneas
-        box(10, 0.2, 4);
-        popMatrix();
-      }
-      fill(0); // Restaurar color asfalto para el próximo ciclo
-    }
-  }
-  noStroke();
 }
 
-void keyPressed() {
+// ===================== Colisión edificios =====================
+void resolveBuildingCollision(){
+  int cx = floor(camX / chunkSize);
+  int cz = floor(camZ / chunkSize);
+  // revisar el chunk actual y vecinos por seguridad
+  for (int dx=-1; dx<=1; dx++){
+    for (int dz=-1; dz<=1; dz++){
+      String k = keyOf(cx+dx, cz+dz);
+      if (!aabbsPerChunk.containsKey(k)) continue;
+      ArrayList<AABB> list = aabbsPerChunk.get(k);
+      for (AABB box : list){
+        if (box.contains(camX, camY, camZ)){
+          // Empuje suave hacia la cara más cercana en XZ (no tocamos Y para permitir subir por afuera)
+          float pushX = min(abs(camX - box.minX), abs(box.maxX - camX));
+          float pushZ = min(abs(camZ - box.minZ), abs(box.maxZ - camZ));
+          if (pushX < pushZ){
+            if (abs(camX - box.minX) < abs(box.maxX - camX)) camX = box.minX - 0.2;
+            else camX = box.maxX + 0.2;
+          } else {
+            if (abs(camZ - box.minZ) < abs(box.maxZ - camZ)) camZ = box.minZ - 0.2;
+            else camZ = box.maxZ + 0.2;
+          }
+        }
+      }
+    }
+  }
+}
+
+// ===================== Nubes (sin colisión) =====================
+void drawClouds(){
+noStroke();  
+fill(255, 255, 255, 220); // gris-azulado con algo de transparencia
+  for (PVector c : clouds){
+    float d = dist(camX, camZ, c.x, c.z);
+    float s = map(d, 0, 1200, 120, 40); // más chica si lejos
+
+    // Billboard: rotar para mirar a la cámara
+    pushMatrix();
+    translate(c.x, c.y, c.z);
+    
+    // Rotación billboard
+    float ang = atan2(camX - c.x, camZ - c.z);
+    rotateY(ang);
+    
+    // 👉 Apagás luces SOLO para la nube
+    noLights();  
+    noStroke();
+    fill(255, 255, 255, 180);
+    
+    // Dibujo del quad
+    beginShape(QUADS);
+    vertex(-s,  25, 0);
+    vertex( s,  25, 0);
+    vertex( s, -25, 0);
+    vertex(-s, -25, 0);
+    endShape();
+   
+    // Volvés a prenderlas para lo demás
+    lights();
+    popMatrix();
+  }
+}
+
+// ===================== Teclado =====================
+void keyPressed(){
   if (key == 'w' || key == 'W') moveForward = true;
   if (key == 's' || key == 'S') moveBackward = true;
-  if (key == 'd' || key == 'D') moveLeft = true;
-  if (key == 'a' || key == 'A') moveRight = true;
+  if (key == 'a' || key == 'A') moveLeft = true;   // corregido
+  if (key == 'd' || key == 'D') moveRight = true;  // corregido
   if (key == 'q' || key == 'Q') moveUp = true;
   if (key == 'e' || key == 'E') moveDown = true;
 }
-
-void keyReleased() {
+void keyReleased(){
   if (key == 'w' || key == 'W') moveForward = false;
   if (key == 's' || key == 'S') moveBackward = false;
-  if (key == 'd' || key == 'D') moveLeft = false;
-  if (key == 'a' || key == 'A') moveRight = false;
+  if (key == 'a' || key == 'A') moveLeft = false;
+  if (key == 'd' || key == 'D') moveRight = false;
   if (key == 'q' || key == 'Q') moveUp = false;
   if (key == 'e' || key == 'E') moveDown = false;
 }
