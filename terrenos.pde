@@ -53,6 +53,12 @@ ArrayList<PVector> clouds = new ArrayList<PVector>();
 int cloudCount = 60;
 float cloudY = 260;
 
+// ===================== HUD (overlay 2D) =====================
+// No modifica controles ni lógica de terreno. Solo dibuja por encima y usa datos de cámara existentes.
+float hudSpeed = 0;  // velocidad instantánea (u/seg)
+float prevX, prevY, prevZ;
+int prevT = 0;
+
 // ===================== Util =====================
 String keyOf(int cx, int cz){ return cx + "," + cz; }
 
@@ -122,6 +128,10 @@ void draw(){
 
   // Nubes (al final, transparentes y billboard)
   drawClouds();
+
+  // ====== ACTUALIZACIÓN DE INSTRUMENTOS + HUD (agregado) ======
+  updateHUDData();
+  drawHUD();
 }
 
 
@@ -553,20 +563,124 @@ fill(255, 255, 255, 220); // gris-azulado con algo de transparencia
   }
 }
 
+// ===================== Cabina 2D (HUD) =====================
+// Calcula velocidad instantánea a partir del desplazamiento de la cámara
+void updateHUDData(){
+  int t = millis();
+  if (prevT == 0){
+    prevX = camX; prevY = camY; prevZ = camZ; prevT = t; hudSpeed = 0;
+    return;
+  }
+  float dt = max(1, t - prevT) / 1000.0; // segundos, evita división por cero
+  float dx = camX - prevX;
+  float dy = camY - prevY;
+  float dz = camZ - prevZ;
+  float d = sqrt(dx*dx + dy*dy + dz*dz);
+  hudSpeed = d / dt; // unidades por segundo
+  prevX = camX; prevY = camY; prevZ = camZ; prevT = t;
+}
+
+void drawHUD(){
+  // Dibujo en overlay 2D sin profundidad ni luces
+  hint(DISABLE_DEPTH_TEST);
+  noLights();
+  camera();
+  ortho();
+
+  pushStyle();
+  // Panel inferior
+  noStroke();
+  fill(0, 120);
+  rect(0, height-160, width, 160);
+
+  // ------- Horizonte artificial (simplificado: muestra cabeceo) -------
+  pushMatrix();
+  translate(width*0.22, height-80);
+  // Marco
+  stroke(255);
+  noFill();
+  ellipse(0, 0, 120, 120);
+  // Disco cielo/tierra desplazado por pitch (sin roll en esta simulación)
+  float pitchOffset = map(pitch, -PI/2, PI/2, -50, 50);
+  stroke(200);
+  line(-60, pitchOffset, 60, pitchOffset);     // línea de horizonte
+  stroke(0,255,0);
+  line(0, -50, 0, 50);                         // referencia vertical
+  fill(255);
+  noStroke();
+  textAlign(CENTER, CENTER);
+  textSize(12);
+  text("HORIZONTE", 0, 70);
+  popMatrix();
+
+  // ------- Altímetro (numérico) -------
+  pushMatrix();
+  translate(width*0.44, height-80);
+  stroke(255);
+  noFill();
+  ellipse(0,0,100,100);
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(12);
+  text("ALT", 0, -50);
+  textSize(16);
+  text(nf(camY, 0, 1) + " m", 0, 5);
+  popMatrix();
+
+  // ------- Velocímetro (numérico) -------
+  pushMatrix();
+  translate(width*0.60, height-80);
+  stroke(255);
+  noFill();
+  ellipse(0,0,100,100);
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(12);
+  text("VEL", 0, -50);
+  textSize(16);
+  text(nf(hudSpeed, 0, 1) + " u/s", 0, 5);
+  popMatrix();
+
+  // ------- Indicador de Rumbo (compás simple) -------
+  pushMatrix();
+  translate(width*0.80, height-80);
+  stroke(255);
+  noFill();
+  ellipse(0,0,120,120);
+  // aguja norte fija en instrumento; el valor numérico refleja rumbo
+  stroke(255,0,0);
+  line(0,0,0,-50);
+  float heading = (degrees(yaw) % 360 + 360) % 360;
+  fill(255);
+  noStroke();
+  textAlign(CENTER, CENTER);
+  textSize(12);
+  text("RUMBO", 0, -60);
+  textSize(16);
+  text(int(heading) + "°", 0, 60);
+  popMatrix();
+
+  popStyle();
+
+  // Restaurar estado 3D para el siguiente frame
+  hint(ENABLE_DEPTH_TEST);
+  perspective(PI / 3.0, float(width) / height, 0.1, 10000);
+}
+
 // ===================== Teclado =====================
 void keyPressed(){
   if (key == 'w' || key == 'W') moveForward = true;
   if (key == 's' || key == 'S') moveBackward = true;
-  if (key == 'a' || key == 'A') moveLeft = true;   // corregido
-  if (key == 'd' || key == 'D') moveRight = true;  // corregido
+  if (key == 'd' || key == 'D') moveLeft = true;   // corregido
+  if (key == 'a' || key == 'A') moveRight = true;  // corregido
   if (key == 'q' || key == 'Q') moveUp = true;
   if (key == 'e' || key == 'E') moveDown = true;
 }
 void keyReleased(){
   if (key == 'w' || key == 'W') moveForward = false;
   if (key == 's' || key == 'S') moveBackward = false;
-  if (key == 'a' || key == 'A') moveLeft = false;
-  if (key == 'd' || key == 'D') moveRight = false;
+  if (key == 'd' || key == 'D') moveLeft = false;
+  if (key == 'a' || key == 'A') moveRight = false;
   if (key == 'q' || key == 'Q') moveUp = false;
   if (key == 'e' || key == 'E') moveDown = false;
 }
