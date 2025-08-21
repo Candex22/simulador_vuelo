@@ -22,7 +22,8 @@ HashMap<String, ArrayList<PVector>> cloudsPerChunk = new HashMap<String, ArrayLi
 HashMap<String, Boolean> cloudsGeneratedForChunk = new HashMap<String, Boolean>();
 HashMap<String, ArrayList<PVector>> treesPerChunk = new HashMap<String, ArrayList<PVector>>();
 HashMap<String, ArrayList<PVector>> buildingsPerChunk = new HashMap<String, ArrayList<PVector>>();
-HashMap<String, Integer> chunkTypes = new HashMap<String, Integer>(); // 0=pradera,1=ciudad,2=montaña
+HashMap<String, Integer> chunkTypes = new HashMap<String, Integer>(); // 0=pradera,1=ciudad,2=montaña,3=aeropuerto  
+HashMap<String, Boolean> airportPerChunk = new HashMap<String, Boolean>();
 
 float gridSize = 40;
 float noiseScale = 0.01;
@@ -185,33 +186,40 @@ void applyCamera(){
 // Tipos de chunk deterministas + exclusión de ciudades alrededor de montañas
 int getChunkType(int cx, int cz){
   String k = keyOf(cx,cz);
+  // 3) Aeropuerto tiene prioridad y es determinista
+  if (isAirportChunk(cx, cz)) {
+    chunkTypes.put(k, 3); // 3=aeropuerto
+    return 3;
+  }
+  // Si ya se resolvió antes (y NO era aeropuerto), devolvés
   if (chunkTypes.containsKey(k)) return chunkTypes.get(k);
-
-  // Base determinista (ruido + hash)
+  // Base determinista (ruido + hash) para 0/1/2
   float r = 0.65*noise((cx+seed)*0.17, (cz-seed)*0.17) + 0.35*hash2i(cx,cz);
-
   int type;
   if (r > 0.78)      type = 2; // montaña
   else if (r > 0.10) type = 1; // ciudad
   else               type = 0; // pradera
-
   // Si es montaña, evitar ciudades pegadas (4-neighborhood)
   if (type == 2){
-    // etiquetar vecinos como pradera (salvo otras montañas)
     int[][] nbs = {{1,0},{-1,0},{0,1},{0,-1}};
     for (int i=0;i<nbs.length;i++){
       int nx=cx+nbs[i][0], nz=cz+nbs[i][1];
       String nk = keyOf(nx,nz);
+      // No tocar si el vecino es aeropuerto
+      if (isAirportChunk(nx, nz)) {
+        chunkTypes.put(nk, 3);
+        continue;
+      }
       if (!chunkTypes.containsKey(nk)){
         float rr = 0.65*noise((nx+seed)*0.17, (nz-seed)*0.17) + 0.35*hash2i(nx,nz);
-        int t2 = (rr > 0.78) ? 2 : 0; // vecino solo montaña o pradera, no ciudad
+        int t2 = (rr > 0.78) ? 2 : 0; // vecino: montaña o pradera, no ciudad
         chunkTypes.put(nk, t2);
       } else {
-        if (chunkTypes.get(nk) == 1) chunkTypes.put(nk, 0);
+        int cur = chunkTypes.get(nk);
+        if (cur == 1) chunkTypes.put(nk, 0); // ciudad -> pradera
       }
     }
   }
-
   chunkTypes.put(k, type);
   return type;
 }
@@ -222,38 +230,38 @@ float getTerrainHeight(float x, float z){
   int cz = floor(z / chunkSize);
   int ct = getChunkType(cx, cz);
 
-  if (ct == 1){
-    return cityBaseY; // piso plano para ciudad
+  if (ct == 3){
+    return cityBaseY; // aeropuerto plano
+  } else if (ct == 1){
+    return cityBaseY; // ciudad plana
   } else if (ct == 2){
-    // Centro del chunk para una “cúpula” suave
+    // ... (tu código de montaña igual)
     float centerX = cx*chunkSize + chunkSize*0.5;
     float centerZ = cz*chunkSize + chunkSize*0.5;
     float d = dist(x, z, centerX, centerZ);
-    float r0 = chunkSize*0.42;     // radio completo
-    float r1 = chunkSize*0.52;     // cola de desvanecimiento
-    float mask = 1.0 - smoothstep(r0, r1, d);  // 1 en el centro, 0 en borde/afuera
-
+    float r0 = chunkSize*0.42;
+    float r1 = chunkSize*0.52;
+    float mask = 1.0 - smoothstep(r0, r1, d);
     float base = noise(x*noiseScale + seed*100, z*noiseScale + seed*100) * terrainHeightScale * 0.55;
     float peak = noise(x*noiseScale*0.6 + 999, z*noiseScale*0.6 + 999) * mountainHeightScale;
-    float h = base + peak * mask + 8*mask; // leve pedestal
-
-    // Transición adicional si vecino es pradera/ciudad (borde más gentil)
+    float h = base + peak * mask + 8*mask;
     return h;
   } else {
     return noise(x*noiseScale + seed*100, z*noiseScale + seed*100) * terrainHeightScale;
   }
 }
 
+
 // ===================== Rutas/edificios: lógica única =====================
 // Calles a cada 200, con 40 de asfalto + 10 de acera por lado (60 total)
 boolean isRoadLocal(float localX, float localZ){
   // verticales
   for (int rx = 0; rx <= chunkSize; rx += 200){
-    if (abs(localX - rx) <= (roadWidth/2 + sidewalkWidth)) return true;
+    if (abs(localX - rx) < (roadWidth/2 + sidewalkWidth + 5)) return true;
   }
   // horizontales
   for (int rz = 0; rz <= chunkSize; rz += 200){
-    if (abs(localZ - rz) <= (roadWidth/2 + sidewalkWidth)) return true;
+    if (abs(localZ - rz) < (roadWidth/2 + sidewalkWidth + 5)) return true;
   }
   return false;
 }
@@ -279,10 +287,45 @@ void drawChunk(int cx, int cz){
 
   drawTerrain(baseX, baseZ, type);
 
-// Pradera: sólo árboles (ya no se cuelan en ciudad/calles)
-  if (type != 2) drawPradera(baseX, baseZ, key, type);
+  // Contenido SEGÚN tipo
+  if (type == 0) {
+    // ✅ Pradera: árboles solamente (ya no se meten en ciudad ni aeropuerto)
+    drawPradera(baseX, baseZ, key, type);
+  } else if (type == 1) {
+    drawCiudad(baseX, baseZ, key);
+  } else if (type == 3) {
+    drawAirport(baseX, baseZ);
+  }
+}
 
-  if (type == 1) drawCiudad(baseX, baseZ, key);
+boolean isAirportChunk(int cx, int cz){
+  // Aeropuerto en el spawn y luego cada 100 chunks SOLO por ejes (no diagonales)
+  return ( (cx == 0 && abs(cz) % 100 == 0) || (cz == 0 && abs(cx) % 100 == 0) );
+}
+
+void drawAirport(float baseX, float baseZ){ 
+  float y = getTerrainHeight(baseX+chunkSize/2, baseZ+chunkSize/2); 
+  
+  // pista larga 
+  pushMatrix(); 
+  translate(baseX + chunkSize/2, y+1, baseZ + chunkSize/2); 
+  fill(50); 
+  box(chunkSize*0.8, 2, 100);
+  popMatrix(); 
+  
+  // torre de control 
+  pushMatrix(); 
+  translate(baseX + chunkSize/2 - 100, y+50, baseZ + chunkSize/2); 
+  fill(120,120,160); 
+  box(40,100,40); 
+  popMatrix();
+  
+  // hangar 
+  pushMatrix(); 
+  translate(baseX + chunkSize/2 + 100, y+25, baseZ + chunkSize/2); 
+  fill(150,80,80); 
+  box(120,50,120); 
+  popMatrix(); 
 }
 
 void generateCloudsForChunk(int cx, int cz){
@@ -305,10 +348,10 @@ void generateCloudsForChunk(int cx, int cz){
 }
 
 void drawTerrain(float baseX, float baseZ, int type){
-  // Color según bioma (montaña grisácea)
-  if (type == 2) fill(139,137,137);
-  else if (type == 1) fill(80, 120, 80); // debajo de ciudad, oscuro discreto
-  else fill(34,139,34);
+  if (type == 2) fill(139,137,137);      // montaña
+  else if (type == 1) fill(80, 120, 80); // ciudad (debajo)
+  else if (type == 3) fill(90, 110, 90); // aeropuerto (suelo base)
+  else fill(34,139,34);                  // pradera
 
   stroke(0,80,0,50);
   for (float x = baseX; x < baseX + chunkSize; x += gridSize){
