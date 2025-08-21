@@ -18,6 +18,8 @@ int chunkSize = 500;
 int worldSize = 2000;
 int seed = 12345;
 
+HashMap<String, ArrayList<PVector>> cloudsPerChunk = new HashMap<String, ArrayList<PVector>>();
+HashMap<String, Boolean> cloudsGeneratedForChunk = new HashMap<String, Boolean>();
 HashMap<String, ArrayList<PVector>> treesPerChunk = new HashMap<String, ArrayList<PVector>>();
 HashMap<String, ArrayList<PVector>> buildingsPerChunk = new HashMap<String, ArrayList<PVector>>();
 HashMap<String, Integer> chunkTypes = new HashMap<String, Integer>(); // 0=pradera,1=ciudad,2=montaña
@@ -74,13 +76,6 @@ void setup(){
   size(800, 600, P3D);
   perspective(PI / 3.0, float(width) / height, 0.1, 10000);
   noiseSeed(seed);
-
-  // Nubes: posiciones aleatorias amplias, sin colisión
-  for (int i=0;i<cloudCount;i++){
-    float x = random(-2000, 2000);
-    float z = random(-2000, 2000);
-    clouds.add(new PVector(x, cloudY + random(-10, 10), z));
-  }
 }
 
 void draw(){
@@ -93,16 +88,42 @@ void draw(){
   int chunkZ = floor(camZ / chunkSize);
   int viewRange = 2;
 
-  // Terreno + contenido
+  // ================== Nubes: eliminar las de chunks fuera de vista ==================
+  ArrayList<String> visibleChunks = new ArrayList<String>();
+  for (int dx=-viewRange; dx<=viewRange; dx++){
+    for (int dz=-viewRange; dz<=viewRange; dz++){
+      visibleChunks.add(keyOf(chunkX + dx, chunkZ + dz));
+    }
+  }
+
+  ArrayList<String> keysToRemove = new ArrayList<String>();
+  for (String k : cloudsPerChunk.keySet()){
+    if (!visibleChunks.contains(k)){
+      for (PVector c : cloudsPerChunk.get(k)){
+        clouds.remove(c); // eliminar de la lista global
+      }
+      keysToRemove.add(k);
+    }
+  }
+  for (String k : keysToRemove){
+    cloudsPerChunk.remove(k);
+  }
+
+  // ================== Terreno + contenido ==================
   for (int dx = -viewRange; dx <= viewRange; dx++){
     for (int dz = -viewRange; dz <= viewRange; dz++){
-      drawChunk(chunkX + dx, chunkZ + dz);
+      int ncx = chunkX + dx;
+      int ncz = chunkZ + dz;
+
+      generateCloudsForChunk(ncx, ncz); // genera nubes 1 vez por chunk
+      drawChunk(ncx, ncz);
     }
   }
 
   // Nubes (al final, transparentes y billboard)
   drawClouds();
 }
+
 
 // ===================== Cámara =====================
 void updateCamera(){
@@ -248,10 +269,29 @@ void drawChunk(int cx, int cz){
 
   drawTerrain(baseX, baseZ, type);
 
-  // Pradera: sólo árboles (ya no se “cuelan” en ciudad/calles)
+// Pradera: sólo árboles (ya no se cuelan en ciudad/calles)
   if (type != 2) drawPradera(baseX, baseZ, key, type);
 
   if (type == 1) drawCiudad(baseX, baseZ, key);
+}
+
+void generateCloudsForChunk(int cx, int cz){
+  String key = keyOf(cx, cz);
+  if (cloudsPerChunk.containsKey(key)) return; // ya generado
+
+  int cloudsCount = 4 + (int)random(0,2); // 4-5 nubes
+  ArrayList<PVector> localClouds = new ArrayList<PVector>();
+
+  for(int i=0; i<cloudsCount; i++){
+    float x = cx*chunkSize + random(0, chunkSize);
+    float z = cz*chunkSize + random(0, chunkSize);
+    float y = cloudY + random(-10,10);
+    PVector c = new PVector(x,y,z);
+    clouds.add(c); // lista global para dibujar
+    localClouds.add(c); // lista local del chunk
+  }
+
+  cloudsPerChunk.put(key, localClouds);
 }
 
 void drawTerrain(float baseX, float baseZ, int type){
@@ -285,18 +325,31 @@ void drawPradera(float baseX, float baseZ, String chunkKey, int chunkType){
   } else {
     trees = new ArrayList<PVector>();
     int attempts = 0, maxAttempts = 120;
+    // Generación de árboles
     while (trees.size() < 10 && attempts < maxAttempts){
       float x = baseX + random(0, chunkSize);
       float z = baseZ + random(0, chunkSize);
       float y = getTerrainHeight(x, z);
-
-      if (chunkType == 1){
-        // Si es chunk ciudad, prohibir árboles en rutas y edificios
-        float lx = x - baseX;
-        float lz = z - baseZ;
-        if (isRoadLocal(lx, lz) || isInsideBuildingFootprint(lx, lz)){
-          attempts++; continue;
+    
+      // Prohibir árboles en calles o edificios para cualquier chunk que no sea montaña
+      float lx = x - baseX;
+      float lz = z - baseZ;
+      if (isRoadLocal(lx, lz) || isInsideBuildingFootprint(lx, lz)){
+        attempts++; continue;
+      }
+    
+      // Chequeo extra: no sobrepasar altura de edificios vecinos
+      int cx = floor(x / chunkSize);
+      int cz = floor(z / chunkSize);
+      String k = keyOf(cx, cz);
+      if (aabbsPerChunk.containsKey(k)){
+        boolean collision = false;
+        for (AABB box : aabbsPerChunk.get(k)){
+          if (y + 40 > box.minY && y < box.maxY){ // altura tronco + margen
+            collision = true; break;
+          }
         }
+        if (collision){ attempts++; continue; }
       }
       trees.add(new PVector(x, y, z));
       attempts++;
@@ -481,6 +534,7 @@ fill(255, 255, 255, 220); // gris-azulado con algo de transparencia
     float ang = atan2(camX - c.x, camZ - c.z);
     rotateY(ang);
     
+    // Apagás luces SOLO para la nube
     noLights();  
     noStroke();
     fill(255, 255, 255, 180);
@@ -516,4 +570,3 @@ void keyReleased(){
   if (key == 'q' || key == 'Q') moveUp = false;
   if (key == 'e' || key == 'E') moveDown = false;
 }
-
