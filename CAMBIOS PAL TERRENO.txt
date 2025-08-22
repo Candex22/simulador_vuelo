@@ -1,9 +1,6 @@
 Cosas a mejorar:
-1) La generacion de montañas (no se mezclan, aparecen arriba de otros terrenos). Alta prioridad
-2) La generacio de arboles (se generan dentro de los edificios o arriba de la carretera). Alta prioridad
-3) Generar de mejor manera las calles, arreglar las sobreposiciones. Media prioridad
-4) Generar Nubes que no tengan hitboxes. Media prioridad
-5) Mejorar las hitboxes, y la transparencia de los edificios. Media prioridad
-6) Al ir para adelante y subir o bajar, no se puede ir a la derecha o izquierda. Alta prioridad
-7) La pradera se sobrepone a la calle a veces. Media prioridad
-8) Sistema de iluminacion (opcional). Completamente opcional
+1) La generacion de arboles (se generan dentro de los edificios o arriba de la carretera). Alta prioridad (Hecho, masomenos las hojas se siguen pudiendose meter a los edificios y se siguen generando adentro de las calles)
+2) Mejorar las hitboxes, y la transparencia de los edificios. Media prioridad (falta hacerlo)
+3) La pradera se sobrepone a la calle a veces. Media prioridad (masomenos hecho, hay pocas veces en las que pasa)
+4) sistema de aceleracion (prioridad media)
+5) Nubes como minecraft (cookie se encarga, prioridad baja)
