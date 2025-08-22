@@ -30,6 +30,9 @@ float noiseScale = 0.01;
 float terrainHeightScale = 22;
 float mountainHeightScale = 160;
 
+// Puedes poner esta variable al inicio de tu sketch, fuera de cualquier función
+final float MAX_WORLD_HEIGHT = 1000;
+
 // Ciudad
 float cityBaseY = 11;      // Terreno plano bajo la ciudad (constante)
 float roadWidth = 40;
@@ -161,10 +164,24 @@ void updateCamera(){
   if (moveUp)   mv.y += camSpeed;
   if (moveDown) mv.y -= camSpeed;
 
-  // Aplicar
+ // Aplicar movimiento
   camX += mv.x;
   camY += mv.y;
   camZ += mv.z;
+
+  // Lógica para el límite de altura
+  if (camY >= 1000) {
+    // Si el jugador supera los 1000m, muestra un mensaje de advertencia.
+    // Lo más fácil es ponerlo en drawHUD() para que aparezca siempre
+    // que la altura sea > 1000.
+    
+    // Si el jugador supera los 1200m, no le permitas subir más.
+    if (camY >= 1200) {
+      camY = 1200; // Fija la altura en 1200m
+      // También puedes detener el movimiento hacia arriba
+      moveUp = false;
+    }
+  }
 
   // Colisión con terreno
   float groundY = getTerrainHeight(camX, camZ);
@@ -235,7 +252,7 @@ float getTerrainHeight(float x, float z){
   } else if (ct == 1){
     return cityBaseY; // ciudad plana
   } else if (ct == 2){
-    // ... (tu código de montaña igual)
+    
     float centerX = cx*chunkSize + chunkSize*0.5;
     float centerZ = cz*chunkSize + chunkSize*0.5;
     float d = dist(x, z, centerX, centerZ);
@@ -330,18 +347,33 @@ void drawAirport(float baseX, float baseZ){
 
 void generateCloudsForChunk(int cx, int cz){
   String key = keyOf(cx, cz);
-  if (cloudsPerChunk.containsKey(key)) return; // ya generado
+  if (cloudsPerChunk.containsKey(key)) return;
 
-  int cloudsCount = 4 + (int)random(0,2); // 4-5 nubes
+  // Alturas para los dos "pisos" de nubes
+  float cloudY_low = 500;
+  float cloudY_high = 900;
+
+  // Generar la primera tanda de nubes (piso inferior)
+  int cloudsCount_low = 8 + (int)random(0,1); // 2-3 nubes
   ArrayList<PVector> localClouds = new ArrayList<PVector>();
-
-  for(int i=0; i<cloudsCount; i++){
+  for(int i=0; i<cloudsCount_low; i++){
     float x = cx*chunkSize + random(0, chunkSize);
     float z = cz*chunkSize + random(0, chunkSize);
-    float y = cloudY + random(-10,10);
+    float y = cloudY_low + random(-10,10);
     PVector c = new PVector(x,y,z);
-    clouds.add(c); // lista global para dibujar
-    localClouds.add(c); // lista local del chunk
+    clouds.add(c);
+    localClouds.add(c);
+  }
+
+  // Generar la segunda tanda de nubes (piso superior)
+  int cloudsCount_high = 8 + (int)random(0,1); // 2-3 nubes
+  for(int i=0; i<cloudsCount_high; i++){
+    float x = cx*chunkSize + random(0, chunkSize);
+    float z = cz*chunkSize + random(0, chunkSize);
+    float y = cloudY_high + random(-10,10);
+    PVector c = new PVector(x,y,z);
+    clouds.add(c);
+    localClouds.add(c);
   }
 
   cloudsPerChunk.put(key, localClouds);
@@ -590,7 +622,7 @@ fill(255, 255, 255, 220); // gris-azulado con algo de transparencia
     // Apagás luces SOLO para la nube
     noLights();  
     noStroke();
-    fill(255, 255, 255, 180);
+    fill(255, 255, 255, 100);
     
     // Dibujo del quad
     beginShape(QUADS);
@@ -655,7 +687,6 @@ pg.noStroke();
 
 // Rotación e inclinación según cámara
 pg.pushMatrix();
-pg.rotate(-yaw);   // roll (giro lateral)
 pg.translate(0, map(pitch, -PI/4, PI/4, -40, 40)); // desplazamiento vertical por pitch
 
 // Cielo (azul)
@@ -732,6 +763,15 @@ popMatrix();
   popMatrix();
 
   popStyle();
+  // Aviso de altura
+  if (camY >= 1000) {
+    pushStyle();
+    textAlign(CENTER, CENTER);
+    textSize(24);
+    fill(255, 0, 0); // Texto en rojo
+    text("ADVERTENCIA: Límite de altura próximo (1200m)", width/2, 50);
+    popStyle();
+  }
 
   // Restaurar estado 3D para el siguiente frame
   hint(ENABLE_DEPTH_TEST);
