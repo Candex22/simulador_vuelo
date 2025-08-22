@@ -637,24 +637,52 @@ void drawHUD(){
   rect(0, height-160, width, 160);
 
   // ------- Horizonte artificial (simplificado: muestra cabeceo) -------
-  pushMatrix();
-  translate(width*0.22, height-80);
-  // Marco
-  stroke(255);
-  noFill();
-  ellipse(0, 0, 120, 120);
-  // Disco cielo/tierra desplazado por pitch (sin roll en esta simulación)
-  float pitchOffset = map(pitch, -PI/2, PI/2, -50, 50);
-  stroke(200);
-  line(-60, pitchOffset, 60, pitchOffset);     // línea de horizonte
-  stroke(0,255,0);
-  line(0, -50, 0, 50);                         // referencia vertical
-  fill(255);
-  noStroke();
-  textAlign(CENTER, CENTER);
-  textSize(12);
-  text("HORIZONTE", 0, 70);
-  popMatrix();
+ // ------- Horizonte artificial estilo real -------  
+pushMatrix();
+translate(width*0.22, height-80);
+
+// Marco
+stroke(200);
+strokeWeight(2);
+noFill();
+ellipse(0,0,120,120);
+
+// Clip circular (para que el cielo/tierra no salga del marco)
+PGraphics pg = createGraphics(120,120);
+pg.beginDraw();
+pg.translate(60,60); // centro local
+pg.noStroke();
+
+// Rotación e inclinación según cámara
+pg.pushMatrix();
+pg.rotate(-yaw);   // roll (giro lateral)
+pg.translate(0, map(pitch, -PI/4, PI/4, -40, 40)); // desplazamiento vertical por pitch
+
+// Cielo (azul)
+pg.fill(70,130,180);
+pg.rect(-120,-120,240,120);
+
+// Tierra (marrón)
+pg.fill(139,69,19);
+pg.rect(-120,0,240,120);
+
+pg.popMatrix();
+pg.endDraw();
+image(pg,-60,-60);  // dibujar dentro del círculo
+
+// Marcas fijas del avión
+stroke(255,120,0);
+strokeWeight(3);
+line(-30,0,30,0);   // barra horizontal
+line(0,-10,0,10);   // barra vertical corta
+
+fill(255);
+noStroke();
+textAlign(CENTER,CENTER);
+textSize(12);
+text("HORIZONTE", 0,70);
+popMatrix();
+
 
   // ------- Altímetro (numérico) -------
   pushMatrix();
