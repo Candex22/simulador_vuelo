@@ -2,16 +2,26 @@ import java.util.ArrayList;
 import java.util.HashMap;
 
 // ===================== Cámara =====================
+// Variables globales (Asegúrate de que 'roll' exista)  
 float camX = 0, camY = 300, camZ = 0;
-float camSpeed = 6;
-float yaw = 0, pitch = 0;
+float currentSpeed = 0;
+float maxSpeed = 20;
+float currentMaxSpeed = 20; // Nueva variable para la velocidad máxima actual
+float maxSpeedStep = 5; // Cantidad para aumentar o disminuir la velocidad máxima
+float acceleration = 0.5;
+float deceleration = 0.2;
+float yaw = 0, pitch = 0, roll = 0;
 float sensitivity = 0.005;
 float cameraGroundOffset = 5;
+PVector velocity = new PVector(0,0,0);
+float damping = 0.99; 
 
 // Teclas
 boolean moveForward = false, moveBackward = false;
 boolean moveLeft = false, moveRight = false;
 boolean moveUp = false, moveDown = false;
+boolean accelerate = false, decelerate = false; // aceleracion y desaleracion
+boolean speedUp = false, speedDown = false; // Nuevas variables para R y F
 
 // ===================== Mundo =====================
 int chunkSize = 500;
@@ -141,53 +151,82 @@ void draw(){
 
 // ===================== Cámara =====================
 void updateCamera(){
-  yaw += (mouseX - pmouseX) * sensitivity;
-  pitch -= (mouseY - pmouseY) * sensitivity;
-  pitch = constrain(pitch, -PI/2 + 0.1, PI/2 - 0.1);
-
-  // Direcciones
-  float lx = cos(yaw) * cos(pitch);
-  float ly = sin(pitch);
-  float lz = sin(yaw) * cos(pitch);
-  float rightX = cos(yaw + PI/2.0);
-  float rightZ = sin(yaw + PI/2.0);
-
-  // Movimiento combinado + normalizado (strafe + avance + vertical)
-  PVector mv = new PVector(0,0,0);
-  if (moveForward) { mv.x += lx; mv.y += ly*0.0; mv.z += lz; }
-  if (moveBackward){ mv.x -= lx; mv.y -= ly*0.0; mv.z -= lz; }
-  if (moveRight)   { mv.x += rightX; mv.z += rightZ; }
-  if (moveLeft)    { mv.x -= rightX; mv.z -= rightZ; }
-  if (mv.mag() > 0) mv.normalize().mult(camSpeed);
-
-  // Vertical independiente
-  if (moveUp)   mv.y += camSpeed;
-  if (moveDown) mv.y -= camSpeed;
-
- // Aplicar movimiento
-  camX += mv.x;
-  camY += mv.y;
-  camZ += mv.z;
-
-  // Lógica para el límite de altura
-  if (camY >= 1000) {
-    // Si el jugador supera los 1000m, muestra un mensaje de advertencia.
-    // Lo más fácil es ponerlo en drawHUD() para que aparezca siempre
-    // que la altura sea > 1000.
-    
-    // Si el jugador supera los 1200m, no le permitas subir más.
-    if (camY >= 1200) {
-      camY = 1200; // Fija la altura en 1200m
-      // También puedes detener el movimiento hacia arriba
-      moveUp = false;
-    }
+  // 1. ROTACIÓN DE LA CÁMARA (CONTROL DE VUELO)
+  // Mouse para Yaw y Pitch
+  //  yaw += (mouseX - pmouseX) * sensitivity;
+  // pitch -= (mouseY - pmouseY) * sensitivity;
+    // 1. CONTROL DE ROTACIÓN (YAW Y PITCH) CON TECLAS
+  // 'A' y 'D' para Yaw (giro horizontal)
+  if (moveLeft) {
+    yaw -= 0.05; // Ajusta este valor para la velocidad de giro
+  }
+  if (moveRight) {
+    yaw += 0.05;
   }
 
-  // Colisión con terreno
+  // 'W' y 'S' para Pitch (ascenso y descenso)
+  if (moveForward) {
+    pitch -= 0.02; // Sube la nariz
+  }
+  if (moveBackward) {
+    pitch += 0.02; // Baja la nariz
+  }
+  
+  // Limitar el pitch para evitar giros completos
+  pitch = constrain(pitch, -PI/2 + 0.1, PI/2 - 0.1);
+
+  // Teclas 'A' y 'D' para el Roll
+  float targetRoll = 0;
+  if (moveRight) targetRoll = -PI/8; // Inclinación derecha
+  if (moveLeft) targetRoll = PI/8;  // Inclinación izquierda
+
+  // Suavizar el cambio de roll
+  roll = lerp(roll, targetRoll, 0.1);
+
+// 2. SISTEMA DE ACELERACIÓN Y MARCHAS
+  // Control de velocidad actual (con 'W'/'S')
+  if (moveForward) {
+    currentSpeed += acceleration;
+  } else if (moveBackward) {
+    currentSpeed -= deceleration;
+  }
+
+  // Control de la velocidad máxima (con 'R'/'F')
+  if (speedUp) {
+    currentMaxSpeed += maxSpeedStep;
+  }
+  if (speedDown) {
+    currentMaxSpeed -= maxSpeedStep;
+  }
+  currentMaxSpeed = constrain(currentMaxSpeed, 5, 100); // Rango de marchas
+
+  // Limitar la velocidad actual con la velocidad máxima de la "marcha"
+  currentSpeed = constrain(currentSpeed, 0, currentMaxSpeed);
+
+  // 3. CÁLCULO DE LA DIRECCIÓN...
+  PVector lookDir = new PVector(cos(yaw) * cos(pitch), sin(pitch), sin(yaw) * cos(pitch));
+
+  // Aplicar fuerza a la velocidad
+  velocity.x += lookDir.x * currentSpeed;
+  velocity.y += lookDir.y * currentSpeed;
+  velocity.z += lookDir.z * currentSpeed;
+
+  // Aplicar amortiguación y limitar la velocidad inercial
+  velocity.mult(damping);
+  if (velocity.mag() > maxSpeed) {
+    velocity.normalize().mult(maxSpeed);
+  }
+
+  // 4. APLICAR MOVIMIENTO A LA CÁMARA
+  camX += velocity.x;
+  camY += velocity.y;
+  camZ += velocity.z;
+
+  // 5. LÓGICAS DE COLISIÓN Y LÍMITES
   float groundY = getTerrainHeight(camX, camZ);
   if (camY < groundY + cameraGroundOffset) camY = groundY + cameraGroundOffset;
+  if (camY > 1200) camY = 1200;
 
-  // Colisión con edificios (AABB)
   resolveBuildingCollision();
 }
 
@@ -195,8 +234,21 @@ void applyCamera(){
   float lookX = cos(yaw) * cos(pitch);
   float lookY = sin(pitch);
   float lookZ = sin(yaw) * cos(pitch);
-  camera(camX, camY, camZ, camX + lookX, camY + lookY, camZ + lookZ, 0, -1, 0);
-  directionalLight(255,255,255, 0, -1, 0);
+  
+  PVector look = new PVector(lookX, lookY, lookZ);
+  PVector right = new PVector(cos(yaw + PI/2.0), 0, sin(yaw + PI/2.0));
+  PVector up = PVector.cross(look, right, null); // Cálculo correcto del vector 'up'
+
+  // Rotación del vector 'up' para el roll
+  PVector rolledUp = new PVector();
+  float cosRoll = cos(roll);
+  float sinRoll = sin(roll);
+  rolledUp.x = cosRoll * up.x + sinRoll * right.x;
+  rolledUp.y = cosRoll * up.y + sinRoll * right.y;
+  rolledUp.z = cosRoll * up.z + sinRoll * right.z;
+
+  camera(camX, camY, camZ, camX + look.x, camY + look.y, camZ + look.z, rolledUp.x, rolledUp.y, rolledUp.z);
+  directionalLight(255, 255, 255, 0, -1, 0);
 }
 
 // ===================== Biomas y alturas =====================
@@ -332,7 +384,7 @@ void drawAirport(float baseX, float baseZ){
   
   // torre de control 
   pushMatrix(); 
-  translate(baseX + chunkSize/2 - 100, y+50, baseZ + chunkSize/2); 
+  translate(baseX + chunkSize/2 - 50, y+50, baseZ + chunkSize/4); 
   fill(120,120,160); 
   box(40,100,40); 
   popMatrix();
@@ -782,11 +834,16 @@ popMatrix();
 void keyPressed(){
   if (key == 'w' || key == 'W') moveForward = true;
   if (key == 's' || key == 'S') moveBackward = true;
-  if (key == 'd' || key == 'D') moveLeft = true;   // corregido
-  if (key == 'a' || key == 'A') moveRight = true;  // corregido
+  if (key == 'd' || key == 'D') moveLeft = true;
+  if (key == 'a' || key == 'A') moveRight = true;
   if (key == 'q' || key == 'Q') moveUp = true;
   if (key == 'e' || key == 'E') moveDown = true;
+  if (key == '+') accelerate = true; // Acelerar
+  if (key == '-') decelerate = true; // Desacelerar
+  if (key == 'r' || key == 'R') speedUp = true;
+  if (key == 'f' || key == 'F') speedDown = true;
 }
+
 void keyReleased(){
   if (key == 'w' || key == 'W') moveForward = false;
   if (key == 's' || key == 'S') moveBackward = false;
@@ -794,4 +851,8 @@ void keyReleased(){
   if (key == 'a' || key == 'A') moveRight = false;
   if (key == 'q' || key == 'Q') moveUp = false;
   if (key == 'e' || key == 'E') moveDown = false;
+  if (key == '+') accelerate = false;
+  if (key == '-') decelerate = false;
+  if (key == 'r' || key == 'R') speedUp = false;
+  if (key == 'f' || key == 'F') speedDown = false;
 }
