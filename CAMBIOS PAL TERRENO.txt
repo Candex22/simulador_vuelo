@@ -2,5 +2,6 @@ Cosas a mejorar:
 1) La generacion de arboles (se generan dentro de los edificios o arriba de la carretera). Alta prioridad (Hecho, masomenos las hojas se siguen pudiendose meter a los edificios y se siguen generando adentro de las calles)
 2) Mejorar las hitboxes, y la transparencia de los edificios. Media prioridad (falta hacerlo)
 3) La pradera se sobrepone a la calle a veces. Media prioridad (masomenos hecho, hay pocas veces en las que pasa)
-4) sistema de aceleracion (prioridad media)
+4) sistema de aceleracion (prioridad media, a medio hacer falta poder frenar xd)
 5) Nubes como minecraft (cookie se encarga, prioridad baja)
+
