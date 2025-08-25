@@ -1,5 +1,7 @@
 import java.util.ArrayList;
 import java.util.HashMap;
+PGraphics horizonteBuffer;
+PGraphics mascaraHorizonte;
 
 // ===================== Cámara =====================
 // Variables globales (Asegúrate de que 'roll' exista)  
@@ -96,6 +98,18 @@ void setup(){
   size(800, 600, P3D);
   perspective(PI / 3.0, float(width) / height, 0.1, 10000);
   noiseSeed(seed);
+  
+  horizonteBuffer = createGraphics(120, 120, P2D);
+mascaraHorizonte = createGraphics(120, 120, P2D);
+
+// Preparamos la máscara circular solo una vez
+mascaraHorizonte.beginDraw();
+mascaraHorizonte.background(0);
+mascaraHorizonte.noStroke();
+mascaraHorizonte.fill(255);
+mascaraHorizonte.ellipse(60, 60, 120, 120);
+mascaraHorizonte.endDraw();
+
 }
 
 void draw(){
@@ -616,7 +630,7 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
 
     pushMatrix();
     translate(b.x, b.y + h/2.0, b.z);
-    // Semitransparente cuando estás MUY cerca (para “ver a través”)
+  
     if (near){
       fill(100, 180); // alpha
     } else {
@@ -655,37 +669,29 @@ void resolveBuildingCollision(){
   }
 }
 
-// ===================== Nubes (sin colisión) =====================
-void drawClouds(){
-noStroke();  
-fill(255, 255, 255, 220); // gris-azulado con algo de transparencia
-  for (PVector c : clouds){
-    float d = dist(camX, camZ, c.x, c.z);
-    float s = map(d, 0, 1200, 120, 40); // más chica si lejos
-
-    // Billboard: rotar para mirar a la cámara
+// ===================== Nubes cúbicas estilo Minecraft (estáticas) =====================
+void drawClouds() {
+  noStroke();
+  for (PVector c : clouds) {
     pushMatrix();
     translate(c.x, c.y, c.z);
-    
-    // Rotación billboard
-    float ang = atan2(camX - c.x, camZ - c.z);
-    rotateY(ang);
-    
-    // Apagás luces SOLO para la nube
-    noLights();  
-    noStroke();
-    fill(255, 255, 255, 100);
-    
-    // Dibujo del quad
-    beginShape(QUADS);
-    vertex(-s,  25, 0);
-    vertex( s,  25, 0);
-    vertex( s, -25, 0);
-    vertex(-s, -25, 0);
-    endShape();
-   
-    // Volvés a prenderlas para lo demás
-    lights();
+
+    float baseSize = 40; // tamaño del bloque
+
+    // Cada nube se arma de varios cubos estáticos
+    for (int dx = -1; dx <= 1; dx++) {
+      for (int dz = -1; dz <= 1; dz++) {
+        if (random(1) > 0.4) { // algunos huecos para que no sea perfecto
+          pushMatrix();
+          translate(dx * baseSize, 0, dz * baseSize);
+          noLights();
+          fill(255, 180); // color blanco sólido
+          box(baseSize, baseSize * 0.6, baseSize);
+          lights();
+          popMatrix();
+        }
+      }
+    }
     popMatrix();
   }
 }
@@ -720,80 +726,91 @@ void drawHUD(){
   fill(0, 120);
   rect(0, height-160, width, 160);
 
-  // ------- Horizonte artificial (simplificado: muestra cabeceo) -------
- // ------- Horizonte artificial estilo real -------  
+// ------- Horizonte artificial -------
 pushMatrix();
 translate(width*0.22, height-80);
 
-// Marco
-stroke(200);
-strokeWeight(2);
+horizonteBuffer.beginDraw();
+horizonteBuffer.background(0, 0);  // transparente
+horizonteBuffer.translate(60, 60);
+horizonteBuffer.noStroke();
+
+horizonteBuffer.pushMatrix();
+// desplazamiento por pitch
+horizonteBuffer.translate(0, map(pitch, -PI/4, PI/4, -40, 40));
+// rotación por roll
+horizonteBuffer.rotate(-roll);
+
+// cielo
+horizonteBuffer.fill(70,130,180);
+horizonteBuffer.rect(-200, -200, 400, 200);
+
+// tierra
+horizonteBuffer.fill(139,69,19);
+horizonteBuffer.rect(-200, 0, 400, 200);
+
+// línea de horizonte
+horizonteBuffer.stroke(0);
+horizonteBuffer.strokeWeight(1.5);
+horizonteBuffer.line(-400, 0, 400, 0);
+horizonteBuffer.popMatrix();
+
+horizonteBuffer.endDraw();
+
+// Aplicamos la máscara y dibujamos
+PImage hImg = horizonteBuffer.get();
+hImg.mask(mascaraHorizonte.get());
+image(hImg, -60, -60);
+
+// Contorno
 noFill();
-ellipse(0,0,120,120);
+stroke(255);
+strokeWeight(3);
+ellipse(0, 0, 120, 120);
 
-// Clip circular (para que el cielo/tierra no salga del marco)
-PGraphics pg = createGraphics(120,120);
-pg.beginDraw();
-pg.translate(60,60); // centro local
-pg.noStroke();
-
-// Rotación e inclinación según cámara
-pg.pushMatrix();
-pg.translate(0, map(pitch, -PI/4, PI/4, -40, 40)); // desplazamiento vertical por pitch
-
-// Cielo (azul)
-pg.fill(70,130,180);
-pg.rect(-120,-120,240,120);
-
-// Tierra (marrón)
-pg.fill(139,69,19);
-pg.rect(-120,0,240,120);
-
-pg.popMatrix();
-pg.endDraw();
-image(pg,-60,-60);  // dibujar dentro del círculo
-
-// Marcas fijas del avión
+// Marcas
 stroke(255,120,0);
 strokeWeight(3);
-line(-30,0,30,0);   // barra horizontal
-line(0,-10,0,10);   // barra vertical corta
+line(-30, 0, 30, 0);
+line(0, -10, 0, 10);
 
 fill(255);
 noStroke();
-textAlign(CENTER,CENTER);
+textAlign(CENTER, CENTER);
 textSize(12);
-text("HORIZONTE", 0,70);
+text("HORIZONTE", 0, 70);
+
 popMatrix();
 
+// ------- Altímetro (rectángulo digital) -------
+pushMatrix();
+translate(width*0.44, height-80);
+stroke(255);
+noFill();
+rectMode(CENTER);
+rect(0,0,120,60,10);
+fill(255);
+textAlign(CENTER, CENTER);
+textSize(12);
+text("ALTURA", 0, -40);   // título encima
+textSize(16);
+text(nf(camY,0,1)+" m", 0, 0);
+popMatrix();
 
-  // ------- Altímetro (numérico) -------
-  pushMatrix();
-  translate(width*0.44, height-80);
-  stroke(255);
-  noFill();
-  ellipse(0,0,100,100);
-  fill(255);
-  textAlign(CENTER, CENTER);
-  textSize(12);
-  text("ALT", 0, -50);
-  textSize(16);
-  text(nf(camY, 0, 1) + " m", 0, 5);
-  popMatrix();
-
-  // ------- Velocímetro (numérico) -------
-  pushMatrix();
-  translate(width*0.60, height-80);
-  stroke(255);
-  noFill();
-  ellipse(0,0,100,100);
-  fill(255);
-  textAlign(CENTER, CENTER);
-  textSize(12);
-  text("VEL", 0, -50);
-  textSize(16);
-  text(nf(hudSpeed, 0, 1) + " u/s", 0, 5);
-  popMatrix();
+// ------- Velocímetro (rectángulo digital) -------
+pushMatrix();
+translate(width*0.60, height-80);
+stroke(255);
+noFill();
+rectMode(CENTER);
+rect(0,0,120,60,10);
+fill(255);
+textAlign(CENTER, CENTER);
+textSize(12);
+text("VELOCIDAD", 0, -40); // título encima
+textSize(16);
+text(nf(hudSpeed,0,1)+" u/s", 0, 0);
+popMatrix();
 
   // ------- Indicador de Rumbo (compás simple) -------
   pushMatrix();
@@ -824,6 +841,28 @@ popMatrix();
     text("ADVERTENCIA: Límite de altura próximo (1200m)", width/2, 50);
     popStyle();
   }
+
+  // ------- Encuadre negro (seguro, no interfiere con 3D) -------
+  pushStyle();
+  rectMode(CORNER);
+  noStroke();
+  fill(0); // negro sólido; usa fill(0,180) si lo quieres semitransparente
+
+ // borde de la pantalla
+  float marginX = width * 0.03;   // 12% de borde a la izquierda y derecha
+  float marginY = height * 0.03;  // 12% de borde arriba y abajo
+
+  // Barras negra alrededor del área visible
+  // Arriba
+  rect(0, 0, width, marginY);
+  // Abajo
+  rect(0, height - marginY, width, marginY);
+  // Izquierda
+  rect(0, marginY, marginX, height - 2*marginY);
+  // Derecha
+  rect(width - marginX, marginY, marginX, height - 2*marginY);
+
+  popStyle();
 
   // Restaurar estado 3D para el siguiente frame
   hint(ENABLE_DEPTH_TEST);
