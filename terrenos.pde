@@ -669,31 +669,32 @@ void resolveBuildingCollision(){
   }
 }
 
-// ===================== Nubes cúbicas estilo Minecraft (estáticas) =====================
-void drawClouds() {
-  noStroke();
-  for (PVector c : clouds) {
-    pushMatrix();
-    translate(c.x, c.y, c.z);
-
-    float baseSize = 40; // tamaño del bloque
-
-    // Cada nube se arma de varios cubos estáticos
-    for (int dx = -1; dx <= 1; dx++) {
-      for (int dz = -1; dz <= 1; dz++) {
-        if (random(1) > 0.4) { // algunos huecos para que no sea perfecto
-          pushMatrix();
-          translate(dx * baseSize, 0, dz * baseSize);
-          noLights();
-          fill(255, 180); // color blanco sólido
-          box(baseSize, baseSize * 0.6, baseSize);
-          lights();
-          popMatrix();
-        }
-      }
-    }
-    popMatrix();
-  }
+// ===================== Nubes (sin colisión) ===================== 
+void drawClouds(){ 
+noStroke(); 
+fill(255, 255, 255, 220); // gris-azulado con algo de transparencia 
+for (PVector c : clouds){ 
+  float d = dist(camX, camZ, c.x, c.z); 
+float s = map(d, 0, 1200, 120, 40); // más chica si lejos 
+// Billboard: rotar para mirar a la cámara 
+pushMatrix(); translate(c.x, c.y, c.z); 
+// Rotación billboard 
+float ang = atan2(camX - c.x, camZ - c.z); 
+rotateY(ang); 
+// Apagás luces SOLO para la nube 
+noLights(); 
+noStroke(); 
+fill(255, 255, 255, 100); 
+// Dibujo del quad 
+beginShape(QUADS); 
+vertex(-s, 25, 0); 
+vertex( s, 25, 0); 
+vertex( s, -25, 0); 
+vertex(-s, -25, 0); 
+endShape(); 
+// Volvés a prenderlas para lo demás 
+lights(); popMatrix(); 
+} 
 }
 
 // ===================== Cabina 2D (HUD) =====================
