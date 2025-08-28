@@ -162,81 +162,47 @@ void draw(){
   drawHUD();
 }
 
-
 // ===================== Cámara =====================
-void updateCamera(){
-  // 1. ROTACIÓN DE LA CÁMARA (CONTROL DE VUELO)
-  // Mouse para Yaw y Pitch
-  //  yaw += (mouseX - pmouseX) * sensitivity;
-  // pitch -= (mouseY - pmouseY) * sensitivity;
-    // 1. CONTROL DE ROTACIÓN (YAW Y PITCH) CON TECLAS
-  // 'A' y 'D' para Yaw (giro horizontal)
-  if (moveLeft) {
-    yaw -= 0.05; // Ajusta este valor para la velocidad de giro
-  }
-  if (moveRight) {
-    yaw += 0.05;
-  }
-
-  // 'W' y 'S' para Pitch (ascenso y descenso)
-  if (moveForward) {
-    pitch -= 0.02; // Sube la nariz
-  }
-  if (moveBackward) {
-    pitch += 0.02; // Baja la nariz
-  }
-  
-  // Limitar el pitch para evitar giros completos
+void updateCamera() {
+  // 1. ROTACIÓN DE LA CÁMARA
+  if (moveLeft) yaw -= 0.05;
+  if (moveRight) yaw += 0.05;
+  if (moveForward) pitch -= 0.02;
+  if (moveBackward) pitch += 0.02;
   pitch = constrain(pitch, -PI/2 + 0.1, PI/2 - 0.1);
 
-  // Teclas 'A' y 'D' para el Roll
   float targetRoll = 0;
-  if (moveRight) targetRoll = -PI/8; // Inclinación derecha
-  if (moveLeft) targetRoll = PI/8;  // Inclinación izquierda
-
-  // Suavizar el cambio de roll
+  if (moveRight) targetRoll = -PI/8;
+  if (moveLeft)  targetRoll =  PI/8;
   roll = lerp(roll, targetRoll, 0.1);
 
-// 2. SISTEMA DE ACELERACIÓN Y MARCHAS
-  // Control de velocidad actual (con 'W'/'S')
-  if (moveForward) {
-    currentSpeed += acceleration;
-  } else if (moveBackward) {
-    currentSpeed -= deceleration;
-  }
-
-  // Control de la velocidad máxima (con 'R'/'F')
-  if (speedUp) {
-    currentMaxSpeed += maxSpeedStep;
-  }
-  if (speedDown) {
-    currentMaxSpeed -= maxSpeedStep;
-  }
-  currentMaxSpeed = constrain(currentMaxSpeed, 5, 100); // Rango de marchas
-
-  // Limitar la velocidad actual con la velocidad máxima de la "marcha"
+  // 2. CONTROL DE VELOCIDAD
+  if (speedUp)  currentSpeed += acceleration;
+  if (speedDown) currentSpeed -= acceleration;
   currentSpeed = constrain(currentSpeed, 0, currentMaxSpeed);
 
-  // 3. CÁLCULO DE LA DIRECCIÓN...
-  PVector lookDir = new PVector(cos(yaw) * cos(pitch), sin(pitch), sin(yaw) * cos(pitch));
+  // 3. DIRECCIÓN COMPLETA (con pitch)
+  PVector lookDir = new PVector(
+    cos(pitch) * cos(yaw),   // X
+    sin(pitch),              // Y
+    cos(pitch) * sin(yaw)    // Z
+  );
 
-  // Aplicar fuerza a la velocidad
-  velocity.x += lookDir.x * currentSpeed;
-  velocity.y += lookDir.y * currentSpeed;
-  velocity.z += lookDir.z * currentSpeed;
+  lookDir.normalize(); // que solo defina la dirección
+  PVector movement = PVector.mult(lookDir, currentSpeed);
 
-  // Aplicar amortiguación y limitar la velocidad inercial
+  // 4. AMORTIGUACIÓN E INERCIA (solo horizontal si querés)
+  velocity.x += movement.x;
+  velocity.z += movement.z;
   velocity.mult(damping);
-  if (velocity.mag() > maxSpeed) {
-    velocity.normalize().mult(maxSpeed);
-  }
+  if (velocity.mag() > maxSpeed) velocity.normalize().mult(maxSpeed);
 
-  // 4. APLICAR MOVIMIENTO A LA CÁMARA
+  // 5. APLICAR MOVIMIENTO A LA CÁMARA
   camX += velocity.x;
-  camY += velocity.y;
+  camY += movement.y; // vertical sigue la cámara
   camZ += velocity.z;
 
-  // 5. LÓGICAS DE COLISIÓN Y LÍMITES
+  // 6. LÍMITES Y COLISIÓN
   float groundY = getTerrainHeight(camX, camZ);
   if (camY < groundY + cameraGroundOffset) camY = groundY + cameraGroundOffset;
   if (camY > 1200) camY = 1200;
@@ -872,16 +838,12 @@ popMatrix();
 
 // ===================== Teclado =====================
 void keyPressed(){
-  if (key == 'w' || key == 'W') moveForward = true;
-  if (key == 's' || key == 'S') moveBackward = true;
+  if (key == 'w' || key == 'W') moveForward = true;  
+  if (key == 's' || key == 'S') moveBackward = true; 
   if (key == 'd' || key == 'D') moveLeft = true;
   if (key == 'a' || key == 'A') moveRight = true;
-  if (key == 'q' || key == 'Q') moveUp = true;
-  if (key == 'e' || key == 'E') moveDown = true;
-  if (key == '+') accelerate = true; // Acelerar
-  if (key == '-') decelerate = true; // Desacelerar
-  if (key == 'r' || key == 'R') speedUp = true;
-  if (key == 'f' || key == 'F') speedDown = true;
+  if (key == 'r' || key == 'R') speedUp = true;    // Acelerar
+  if (key == 'f' || key == 'F') speedDown = true;  // Frenar 
 }
 
 void keyReleased(){
@@ -889,10 +851,6 @@ void keyReleased(){
   if (key == 's' || key == 'S') moveBackward = false;
   if (key == 'd' || key == 'D') moveLeft = false;
   if (key == 'a' || key == 'A') moveRight = false;
-  if (key == 'q' || key == 'Q') moveUp = false;
-  if (key == 'e' || key == 'E') moveDown = false;
-  if (key == '+') accelerate = false;
-  if (key == '-') decelerate = false;
   if (key == 'r' || key == 'R') speedUp = false;
   if (key == 'f' || key == 'F') speedDown = false;
 }
