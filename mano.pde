@@ -9,7 +9,7 @@ BufferedReader input;
 // ===== Gesture and landmarks =====
 ArrayList<PVector> mpLandmarks;
 HandGestureClassifier handClassifier;
-String[] gesture_labels = { "Open", "Fist", "Point", "Peace", "OK", "Rock" };
+String[] gesture_labels = { "Open", "Three", "Scout", "Peace", "Rock", "Call" };
 
 // Point history
 ArrayList<PVector> point_history;
@@ -173,11 +173,11 @@ class HandGestureClassifier {
     boolean pinkyOpen  = dPinky  > avg * 0.5;
 
     if (indexOpen && middleOpen && ringOpen && pinkyOpen) return 0; // Open !
-    else if (!indexOpen && !middleOpen && !ringOpen && !pinkyOpen) return 1; // Fist
-    else if (indexOpen && !middleOpen && !ringOpen && !pinkyOpen) return 2; // Point
+    else if (indexOpen && middleOpen && !ringOpen && pinkyOpen) return 1; // Three !
+    else if (indexOpen && middleOpen && ringOpen && !pinkyOpen) return 2; // Point
     else if (indexOpen && middleOpen && !ringOpen && !pinkyOpen) return 3; // Peace !
     else if (indexOpen && !middleOpen && !ringOpen && pinkyOpen) return 4; // OK !
-    else if (pinkyOpen && thumbOpen && !indexOpen && !middleOpen && !ringOpen) return 5; // Rock
+    else if (pinkyOpen && thumbOpen && !indexOpen && !middleOpen && !ringOpen) return 5; // Call +-
 
     return -1;
   }
