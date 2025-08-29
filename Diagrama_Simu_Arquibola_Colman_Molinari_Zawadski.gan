@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?><project name="Untitled Gantt Project" company="" webLink="http://" view-date="2025-06-02" view-index="0" gantt-divider-location="351" resource-divider-location="300" version="3.3.3316" locale="es_AR">
+    <description/>
+    <view zooming-state="default:7" id="gantt-chart">
+        <field id="tpd3" name="Name" width="200" order="0"/>
+        <field id="tpd4" name="Begin date" width="75" order="1"/>
+        <field id="tpd5" name="End date" width="75" order="2"/>
+        <field id="tpd15" name="Notes" width="20" order="3"/>
+        <option id="filter.completedTasks" value="false"/>
+        <option id="filter.dueTodayTasks" value="false"/>
+        <option id="filter.overdueTasks" value="false"/>
+        <option id="filter.inProgressTodayTasks" value="false"/>
+    </view>
+    <view id="resource-table">
+        <field id="0" name="Name" width="210" order="0"/>
+        <field id="1" name="Default role" width="86" order="1"/>
+    </view>
+    <!-- -->
+    <calendars>
+        <day-types>
+            <day-type id="0"/>
+            <day-type id="1"/>
+            <default-week id="1" name="default" sun="1" mon="0" tue="0" wed="0" thu="0" fri="0" sat="1"/>
+            <only-show-weekends value="false"/>
+            <overriden-day-types/>
+            <days/>
+        </day-types>
+    </calendars>
+    <tasks empty-milestones="true">
+        <taskproperties>
+            <taskproperty id="tpd0" name="type" type="default" valuetype="icon"/>
+            <taskproperty id="tpd1" name="priority" type="default" valuetype="icon"/>
+            <taskproperty id="tpd2" name="info" type="default" valuetype="icon"/>
+            <taskproperty id="tpd3" name="name" type="default" valuetype="text"/>
+            <taskproperty id="tpd4" name="begindate" type="default" valuetype="date"/>
+            <taskproperty id="tpd5" name="enddate" type="default" valuetype="date"/>
+            <taskproperty id="tpd6" name="duration" type="default" valuetype="int"/>
+            <taskproperty id="tpd7" name="completion" type="default" valuetype="int"/>
+            <taskproperty id="tpd8" name="coordinator" type="default" valuetype="text"/>
+            <taskproperty id="tpd9" name="predecessorsr" type="default" valuetype="text"/>
+        </taskproperties>
+        <task id="0" uid="3fa053095abc4574b20d709f33ae236b" name="Investigación" meeting="false" start="2025-06-16" duration="9" complete="100" expand="true">
+            <depend id="1" type="1" difference="2" hardness="Strong"/>
+            <task id="12" uid="75405977ca6749edb19ab00549efddec" name="Definicion de problematica" meeting="false" start="2025-06-16" duration="3" complete="100" expand="true">
+                <depend id="13" type="2" difference="0" hardness="Strong"/>
+            </task>
+            <task id="13" uid="2fe083d46442416cb5ff3da4dc133870" name="Informe inicial" meeting="false" start="2025-06-19" duration="6" complete="100" expand="true"/>
+        </task>
+        <task id="1" uid="000c5a99f0724a0eb327a35e4b6f3d1b" name="Planificación" meeting="false" start="2025-06-18" duration="7" complete="100" expand="true">
+            <depend id="2" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="2" uid="d6a8ae3cbaa64d289b77f90c3d24b83c" name="Desarrollo" meeting="false" start="2025-06-27" duration="38" complete="100" expand="true">
+            <depend id="5" type="2" difference="0" hardness="Strong"/>
+            <depend id="6" type="2" difference="0" hardness="Strong"/>
+            <task id="10" uid="82a9ac6da1a24945a4f7a8fd84c82c85" name="Gestor de manos" meeting="false" start="2025-06-27" duration="35" complete="100" expand="true">
+                <depend id="4" type="2" difference="0" hardness="Strong"/>
+                <depend id="11" type="1" difference="0" hardness="Strong"/>
+            </task>
+            <task id="11" uid="ea0b3e642820411195008b577969bc7d" name="Diseño Grafico" meeting="false" start="2025-06-27" duration="35" complete="100" expand="true">
+                <depend id="4" type="2" difference="0" hardness="Strong"/>
+            </task>
+            <task id="4" uid="270d11d25d544d2e883308b6f2be991c" name="Integracion" meeting="false" start="2025-08-15" duration="3" complete="100" expand="true"/>
+        </task>
+        <task id="5" uid="02770fee7c3c4f3aa56e7d2f19949b83" name="Presentacion" meeting="false" start="2025-08-20" duration="7" complete="100" expand="true"/>
+        <task id="6" uid="9812eb03f0064dcebccc34273872686a" name="Informe Final" meeting="false" start="2025-08-20" duration="7" complete="100" expand="true"/>
+    </tasks>
+    <resources>
+        <resource id="2" name="Candela Molinari" function="Default:0" contacts="" phone=""/>
+        <resource id="3" name="Tomas Arquibola" function="Default:0" contacts="" phone=""/>
+        <resource id="4" name="Agustin Colman" function="Default:0" contacts="" phone=""/>
+        <resource id="5" name="Tiziano Zawadski" function="Default:0" contacts="" phone=""/>
+    </resources>
+    <allocations>
+        <allocation task-id="0" resource-id="2" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="4" resource-id="2" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="1" resource-id="2" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="12" resource-id="2" function="Default:0" responsible="true" load="100.0"/>
+        <allocation task-id="10" resource-id="2" function="Default:0" responsible="true" load="100.0"/>
+        <allocation task-id="6" resource-id="2" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="0" resource-id="3" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="1" resource-id="3" function="Default:0" responsible="true" load="100.0"/>
+        <allocation task-id="4" resource-id="3" function="Default:0" responsible="true" load="100.0"/>
+        <allocation task-id="12" resource-id="3" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="10" resource-id="3" function="Default:0" responsible="false" load="30.0"/>
+        <allocation task-id="11" resource-id="3" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="5" resource-id="3" function="Default:0" responsible="true" load="100.0"/>
+        <allocation task-id="0" resource-id="4" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="12" resource-id="4" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="11" resource-id="4" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="6" resource-id="4" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="0" resource-id="5" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="12" resource-id="5" function="Default:0" responsible="false" load="100.0"/>
+        <allocation task-id="11" resource-id="5" function="Default:0" responsible="false" load="100.0"/>
+    </allocations>
+    <vacations/>
+    <previous/>
+    <roles roleset-name="Default"/>
+</project>
