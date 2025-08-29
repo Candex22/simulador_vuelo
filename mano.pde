@@ -1,316 +1,184 @@
-import gab.opencv.*;
-import processing.video.*;
-import java.util.List;
-import java.util.ArrayList;
+import java.net.*;
+import java.io.*;
+import java.util.*;
 
-// Variables globales
-OpenCV opencv;
-Capture video;
-PImage processedImage;
-ArrayList<Contour> contours;
-boolean handDetected = false;
+// ===== TCP Client for MediaPipe =====
+Socket socket;
+BufferedReader input;
+
+// ===== Gesture and landmarks =====
+ArrayList<PVector> mpLandmarks;
+HandGestureClassifier handClassifier;
+String[] gesture_labels = { "Open", "Fist", "Point", "Peace", "OK", "Rock" };
+
+// Point history
+ArrayList<PVector> point_history;
+int history_length = 16;
+
+// FPS
+int fps = 0;
+int lastTime = 0;
 int frameCount = 0;
-boolean showProcessed = false;
-
-// Variables de detección
-PVector palmCenter;
-ArrayList<PVector> fingerTips;
-Contour handContour;
 
 void setup() {
-  size(1200, 400);
-  
-  // Inicializar cámara con configuración específica
-  String[] cameras = Capture.list();
-  if (cameras.length == 0) {
-    println("No hay cámaras disponibles");
-    exit();
-  } else {
-    println("Cámaras disponibles:");
-    for (int i = 0; i < cameras.length; i++) {
-      println(i + ": " + cameras[i]);
-    }
+  size(960, 540);
+  background(0);
+
+  // Initialize variables
+  mpLandmarks = new ArrayList<PVector>();
+  handClassifier = new HandGestureClassifier();
+  point_history = new ArrayList<PVector>();
+
+  // Connect to Python MediaPipe server
+  try {
+    socket = new Socket("127.0.0.1", 5005);
+    input = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+    println("Connected to Python MediaPipe server");
+  } catch (Exception e) {
+    println("Cannot connect to Python server: " + e.getMessage());
   }
-  
-  // Usar la primera cámara disponible
-  video = new Capture(this, 640, 480);
-  video.start();
-  
-  // Inicializar OpenCV
-  opencv = new OpenCV(this, 640, 480);
-  
-  // Inicializar variables
-  fingerTips = new ArrayList<PVector>();
-  contours = new ArrayList<Contour>();
-  
-  // Configurar fuente para evitar warnings
-  textFont(createFont("Arial", 16, true));
-  
-  println("Setup completado");
 }
 
 void draw() {
   background(0);
-  
-  // Solo procesar si hay nueva imagen disponible
-  if (video.available()) {
-    video.read();
-  }
-  
-  // SIEMPRE mostrar la imagen de la cámara, independientemente del procesamiento
-  if (video.width > 0) {
-    image(video, 0, 0);
-  }
-  
-  // Procesar cada 5 frames para mejor rendimiento (menos frecuente)
-  if (frameCount % 5 == 0 && video.width > 0) {
-    processHandDetection();
-  }
-  frameCount++;
-  
-  // Mostrar imagen procesada si está habilitada
-  if (showProcessed && processedImage != null) {
-    image(processedImage, 640, 0);
-  }
-  
-  // SIEMPRE dibujar las detecciones (usando los últimos datos calculados)
-  drawHandDetection();
-  
-  // Mostrar información
-  displayInfo();
-} // <- FALTABA ESTA LLAVE
+  calculateFPS();
 
-void processHandDetection() {
-  try {
-    // Crear una copia de la imagen para no interferir con la visualización
-    PImage tempImage = video.copy();
-    
-    // Aplicar filtro de piel
-    processedImage = applySkinFilter(tempImage);
-    
-    // Cargar imagen filtrada en OpenCV y convertir a escala de grises
-    opencv.loadImage(processedImage);
-    opencv.gray();
-    
-    // Aplicar operaciones morfológicas básicas
-    opencv.erode();
-    opencv.dilate();
-    opencv.dilate();
-    
-    // Obtener imagen procesada final para mostrar
-    if (showProcessed) {
-      processedImage = opencv.getSnapshot();
-    }
-    
-    // Encontrar contornos
-    contours = opencv.findContours(false, true);
-    
-    // Resetear detección
-    handDetected = false;
-    handContour = null;
-    
-    // Buscar el contorno más grande
-    if (contours.size() > 0) {
-      handContour = getLargestContour(contours);
-      
-      // Verificar si es lo suficientemente grande para ser una mano
-      if (handContour != null && handContour.area() > 3000) {
-        handDetected = true;
-        
-        // Calcular centro simple
-        palmCenter = calculateSimpleCenter(handContour);
-        
-        // Detectar dedos de forma simple
-        fingerTips = detectFingersSimple(handContour);
-      }
-    }
-    
-  } catch (Exception e) {
-    println("Error en procesamiento: " + e.getMessage());
+  // Read landmarks from Python
+  readMediaPipeLandmarks();
+
+  // Draw landmarks
+  for (PVector p : mpLandmarks) {
+    fill(255, 0, 0);
+    stroke(255, 255, 0);
+    ellipse(p.x, p.y, 10, 10);
   }
+
+  // Classify gesture if we have a full hand
+  if (mpLandmarks.size() == 21) {
+    HandData hand = new HandData();
+    hand.landmarks = mpLandmarks;
+    int gestureId = handClassifier.classify(hand);
+
+    drawGestureInfo(hand, gestureId);
+    updatePointHistory(hand);
+  }
+
+  drawPointHistory();
+  drawFPS();
 }
 
-PImage applySkinFilter(PImage input) {
-  PImage result = createImage(input.width, input.height, RGB);
-  input.loadPixels();
-  result.loadPixels();
-  
-  for (int i = 0; i < input.pixels.length; i++) {
-    color c = input.pixels[i];
-    float r = red(c);
-    float g = green(c);
-    float b = blue(c);
-    
-    // Filtro de piel RGB simple pero efectivo
-    boolean isSkin = false;
-    
-    if (r > 95 && g > 40 && b > 20 && 
-        r > g && r > b && 
-        (r - g) > 15 && 
-        (r - b) > 15) {
-      isSkin = true;
-    }
-    
-    // Filtro adicional para tonos más oscuros
-    if (r > 60 && g > 30 && b > 15 && 
-        r > g && r > b && 
-        (r - g) > 10) {
-      isSkin = true;
-    }
-    
-    result.pixels[i] = isSkin ? color(255) : color(0);
-  }
-  
-  result.updatePixels();
-  return result;
-}
-
-Contour getLargestContour(ArrayList<Contour> contours) {
-  if (contours.size() == 0) return null;
-  
-  Contour largest = contours.get(0);
-  float maxArea = largest.area();
-  
-  for (Contour contour : contours) {
-    if (contour.area() > maxArea) {
-      maxArea = contour.area();
-      largest = contour;
-    }
-  }
-  
-  return largest;
-}
-
-PVector calculateSimpleCenter(Contour contour) {
-  ArrayList<PVector> points = contour.getPoints();
-  if (points.size() == 0) return new PVector(0, 0);
-  
-  float sumX = 0, sumY = 0;
-  
-  for (PVector point : points) {
-    sumX += point.x;
-    sumY += point.y;
-  }
-  
-  return new PVector(sumX / points.size(), sumY / points.size());
-}
-
-ArrayList<PVector> detectFingersSimple(Contour contour) {
-  ArrayList<PVector> tips = new ArrayList<PVector>();
-  ArrayList<PVector> points = contour.getPoints();
-  
-  if (points.size() < 50) return tips;
-  
-  // Buscar puntos que estén lejos del centro
-  for (int i = 0; i < points.size(); i += 10) {
-    PVector point = points.get(i);
-    float distToCenter = PVector.dist(point, palmCenter);
-    
-    // Si está lejos del centro, podría ser un dedo
-    if (distToCenter > 60) {
-      // Verificar que no esté muy cerca de otro tip ya encontrado
-      boolean farFromOthers = true;
-      for (PVector existing : tips) {
-        if (PVector.dist(point, existing) < 50) {
-          farFromOthers = false;
-          break;
+// ===== Read landmarks from Python server using Processing JSON =====
+void readMediaPipeLandmarks() {
+  if (input != null) {
+    try {
+      if (input.ready()) {
+        String line = input.readLine();
+        if (line != null && line.length() > 0) {
+          JSONArray arr = parseJSONArray(line); // Processing built-in JSON
+          mpLandmarks.clear();
+          for (int i = 0; i < arr.size(); i++) {
+            JSONArray lm = arr.getJSONArray(i);
+            float x = lm.getFloat(0) * width;
+            float y = lm.getFloat(1) * height;
+            mpLandmarks.add(new PVector(x, y));
+          }
         }
       }
-      
-      if (farFromOthers) {
-        tips.add(point.copy());
-      }
-    }
-  }
-  
-  // Limitar a máximo 5 dedos
-  while (tips.size() > 5) {
-    tips.remove(tips.size() - 1);
-  }
-  
-  return tips;
-}
-
-void drawHandDetection() {
-  // Dibujar contorno principal si existe
-  if (handContour != null) {
-    stroke(0, 255, 0);
-    strokeWeight(2);
-    noFill();
-    handContour.draw();
-  }
-  
-  if (!handDetected) return;
-  
-  // Dibujar centro de la palma
-  if (palmCenter != null) {
-    fill(255, 0, 0);
-    noStroke();
-    ellipse(palmCenter.x, palmCenter.y, 15, 15);
-  }
-  
-  // Dibujar puntas de dedos
-  fill(0, 255, 255);
-  noStroke();
-  for (PVector tip : fingerTips) {
-    ellipse(tip.x, tip.y, 12, 12);
-    
-    // Línea del centro a la punta
-    if (palmCenter != null) {
-      stroke(255, 255, 0);
-      strokeWeight(2);
-      line(palmCenter.x, palmCenter.y, tip.x, tip.y);
+    } catch (Exception e) {
+      println("Error reading MediaPipe: " + e.getMessage());
     }
   }
 }
 
-void displayInfo() {
-  // Fondo semitransparente para mejor legibilidad
-  fill(0, 0, 0, 150);
+// ===== Draw gesture info =====
+void drawGestureInfo(HandData hand, int gestureId) {
+  fill(0, 150);
   noStroke();
-  rect(5, 5, 300, 140);
-  
+  rect(10, height - 60, 200, 40);
   fill(255);
   textSize(16);
-  
-  // Estado de la detección
-  String status = handDetected ? "✓ Mano detectada" : "✗ Buscando mano...";
-  text(status, 10, 30);
-  
-  // Información de contornos
-  text("Contornos: " + contours.size(), 10, 50);
-  
-  if (handContour != null) {
-    text("Área: " + int(handContour.area()), 10, 70);
-  }
-  
-  if (handDetected) {
-    text("Dedos: " + fingerTips.size(), 10, 90);
-    
-    if (palmCenter != null) {
-      text("Centro: (" + int(palmCenter.x) + ", " + int(palmCenter.y) + ")", 10, 110);
-    }
-  }
-  
-  // Controles
-  text("'P' = mostrar imagen procesada | FPS: " + int(frameRate), 10, 130);
+  textAlign(LEFT);
+  String gestureText = (gestureId >= 0 && gestureId < gesture_labels.length) ? gesture_labels[gestureId] : "Unknown";
+  text("Gesture: " + gestureText, 20, height - 30);
 }
 
-void keyPressed() {
-  if (key == 'P' || key == 'p') {
-    showProcessed = !showProcessed;
+// ===== Point history =====
+void updatePointHistory(HandData hand) {
+  if (hand.landmarks.size() > 8) {
+    PVector indexTip = hand.landmarks.get(8);
+    point_history.add(indexTip.copy());
+    while (point_history.size() > history_length) point_history.remove(0);
   }
 }
 
-// Funciones de utilidad
-int getFingerCount() {
-  return handDetected ? fingerTips.size() : 0;
+void drawPointHistory() {
+  if (point_history.size() < 2) return;
+  for (int i = 1; i < point_history.size(); i++) {
+    PVector p1 = point_history.get(i-1);
+    PVector p2 = point_history.get(i);
+    float alpha = map(i, 0, point_history.size(), 50, 255);
+    stroke(255, 100, 100, alpha);
+    strokeWeight(map(i, 0, point_history.size(), 1, 4));
+    line(p1.x, p1.y, p2.x, p2.y);
+  }
 }
 
-PVector getPalmCenter() {
-  return palmCenter != null ? palmCenter.copy() : new PVector(0, 0);
+// ===== FPS =====
+void calculateFPS() {
+  frameCount++;
+  if (millis() - lastTime > 1000) {
+    fps = frameCount;
+    frameCount = 0;
+    lastTime = millis();
+  }
 }
 
-ArrayList<PVector> getFingerTips() {
-  return new ArrayList<PVector>(fingerTips);
+void drawFPS() {
+  fill(255);
+  textSize(14);
+  textAlign(LEFT);
+  text("FPS: " + fps, 10, 20);
+}
+
+// ===== HandData class =====
+class HandData {
+  ArrayList<PVector> landmarks;
+  HandData() { landmarks = new ArrayList<PVector>(); }
+}
+
+// ===== Gesture classifier =====
+class HandGestureClassifier {
+  public int classify(HandData hand) {
+    if (hand.landmarks == null || hand.landmarks.size() < 21) return -1;
+
+    PVector wrist = hand.landmarks.get(0);
+    PVector thumbTip = hand.landmarks.get(4);
+    PVector indexTip = hand.landmarks.get(8);
+    PVector middleTip = hand.landmarks.get(12);
+    PVector ringTip = hand.landmarks.get(16);
+    PVector pinkyTip = hand.landmarks.get(20);
+
+    float dThumb = dist(wrist.x, wrist.y, thumbTip.x, thumbTip.y);
+    float dIndex = dist(wrist.x, wrist.y, indexTip.x, indexTip.y);
+    float dMiddle = dist(wrist.x, wrist.y, middleTip.x, middleTip.y);
+    float dRing = dist(wrist.x, wrist.y, ringTip.x, ringTip.y);
+    float dPinky = dist(wrist.x, wrist.y, pinkyTip.x, pinkyTip.y);
+
+    float avg = (dIndex + dMiddle + dRing + dPinky) / 4.0;
+
+    boolean thumbOpen  = dThumb  > avg * 0.5;
+    boolean indexOpen  = dIndex  > avg * 0.5;
+    boolean middleOpen = dMiddle > avg * 0.5;
+    boolean ringOpen   = dRing   > avg * 0.5;
+    boolean pinkyOpen  = dPinky  > avg * 0.5;
+
+    if (indexOpen && middleOpen && ringOpen && pinkyOpen) return 0; // Open !
+    else if (!indexOpen && !middleOpen && !ringOpen && !pinkyOpen) return 1; // Fist
+    else if (indexOpen && !middleOpen && !ringOpen && !pinkyOpen) return 2; // Point
+    else if (indexOpen && middleOpen && !ringOpen && !pinkyOpen) return 3; // Peace !
+    else if (indexOpen && !middleOpen && !ringOpen && pinkyOpen) return 4; // OK !
+    else if (pinkyOpen && thumbOpen && !indexOpen && !middleOpen && !ringOpen) return 5; // Rock
+
+    return -1;
+  }
 }
