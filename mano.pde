@@ -6,10 +6,15 @@ import java.util.*;
 Socket socket;
 BufferedReader input;
 
-// ===== Gesture and landmarks =====
-ArrayList<PVector> mpLandmarks;
+// ===== Hands data =====
+ArrayList<HandData> hands;
+String[] gesture_labels = { "Abierto", "Puño" };
 HandGestureClassifier handClassifier;
-String[] gesture_labels = { "Open", "Three", "Scout", "Peace", "Rock", "Call" };
+
+// Control state
+int leftHandGesture = -1;
+int rightHandGesture = -1;
+String controlStatus = "Sin control";
 
 // Point history
 ArrayList<PVector> point_history;
@@ -25,7 +30,7 @@ void setup() {
   background(0);
 
   // Initialize variables
-  mpLandmarks = new ArrayList<PVector>();
+  hands = new ArrayList<HandData>();
   handClassifier = new HandGestureClassifier();
   point_history = new ArrayList<PVector>();
 
@@ -43,44 +48,82 @@ void draw() {
   background(0);
   calculateFPS();
 
-  // Read landmarks from Python
-  readMediaPipeLandmarks();
+  // Read hands from Python
+  readMediaPipeHands();
 
-  // Draw landmarks
-  for (PVector p : mpLandmarks) {
-    fill(255, 0, 0);
-    stroke(255, 255, 0);
-    ellipse(p.x, p.y, 10, 10);
+  // Reset gestures
+  leftHandGesture = -1;
+  rightHandGesture = -1;
+
+  // Process each hand and classify gestures
+  for (HandData hand : hands) {
+    // Draw landmarks
+    for (PVector p : hand.landmarks) {
+      fill(255, 0, 0);
+      stroke(255, 255, 0);
+      ellipse(p.x, p.y, 10, 10);
+    }
+
+    // Draw hand label
+    if (hand.landmarks.size() > 0) {
+      PVector wrist = hand.landmarks.get(0);
+      fill(0, 200);
+      noStroke();
+      rect(wrist.x - 40, wrist.y - 50, 80, 30);
+      fill(255);
+      textSize(18);
+      textAlign(CENTER, CENTER);
+      text(hand.label, wrist.x, wrist.y - 35);
+    }
+
+    // Classify gesture
+    if (hand.landmarks.size() == 21) {
+      int gestureId = handClassifier.classify(hand);
+      
+      // Store gesture by hand
+      if (hand.label.equals("Left")) {
+        leftHandGesture = gestureId;
+      } else if (hand.label.equals("Right")) {
+        rightHandGesture = gestureId;
+      }
+      
+      drawGestureInfo(hand, gestureId);
+    }
   }
 
-  // Classify gesture if we have a full hand
-  if (mpLandmarks.size() == 21) {
-    HandData hand = new HandData();
-    hand.landmarks = mpLandmarks;
-    int gestureId = handClassifier.classify(hand);
+  // Apply two-hand control logic
+  applyTwoHandControl();
 
-    drawGestureInfo(hand, gestureId);
-    updatePointHistory(hand);
-  }
-
-  drawPointHistory();
   drawFPS();
+  drawControlStatus();
 }
 
-// ===== Read landmarks from Python server using Processing JSON =====
-void readMediaPipeLandmarks() {
+// ===== Read hands from Python server =====
+void readMediaPipeHands() {
   if (input != null) {
     try {
       if (input.ready()) {
         String line = input.readLine();
         if (line != null && line.length() > 0) {
-          JSONArray arr = parseJSONArray(line); // Processing built-in JSON
-          mpLandmarks.clear();
-          for (int i = 0; i < arr.size(); i++) {
-            JSONArray lm = arr.getJSONArray(i);
-            float x = lm.getFloat(0) * width;
-            float y = lm.getFloat(1) * height;
-            mpLandmarks.add(new PVector(x, y));
+          JSONArray handsArray = parseJSONArray(line);
+          hands.clear();
+          
+          for (int h = 0; h < handsArray.size(); h++) {
+            JSONObject handObj = handsArray.getJSONObject(h);
+            String label = handObj.getString("label");
+            JSONArray landmarksArray = handObj.getJSONArray("landmarks");
+            
+            HandData hand = new HandData();
+            hand.label = label;
+            
+            for (int i = 0; i < landmarksArray.size(); i++) {
+              JSONArray lm = landmarksArray.getJSONArray(i);
+              float x = lm.getFloat(0) * width;
+              float y = lm.getFloat(1) * height;
+              hand.landmarks.add(new PVector(x, y));
+            }
+            
+            hands.add(hand);
           }
         }
       }
@@ -90,37 +133,90 @@ void readMediaPipeLandmarks() {
   }
 }
 
+// ===== Two-hand control logic =====
+void applyTwoHandControl() {
+  // Default: maintain straight flight (no control input)
+  controlStatus = "Vuelo recto";
+  
+  // Check if we have valid gestures from both hands
+  boolean leftValid = (leftHandGesture == 0 || leftHandGesture == 1); // 0=Abierto, 1=Puño
+  boolean rightValid = (rightHandGesture == 0 || rightHandGesture == 1);
+  
+  if (!leftValid || !rightValid) {
+    // No valid control - maintain straight flight
+    controlStatus = "Sin control detectado";
+    return;
+  }
+  
+  // Both hands open (0=Abierto) - Pitch up
+  if (leftHandGesture == 0 && rightHandGesture == 0) {
+    controlStatus = "Cabeceo ARRIBA ↑";
+    return;
+  }
+  
+  // Both hands closed (1=Puño) - Pitch down
+  if (leftHandGesture == 1 && rightHandGesture == 1) {
+    controlStatus = "Cabeceo ABAJO ↓";
+    return;
+  }
+  
+  // Right open + Left closed - Turn right
+  if (rightHandGesture == 0 && leftHandGesture == 1) {
+    controlStatus = "Giro DERECHA →";
+    return;
+  }
+  
+  // Left open + Right closed - Turn left
+  if (leftHandGesture == 0 && rightHandGesture == 1) {
+    controlStatus = "Giro IZQUIERDA ←";
+    return;
+  }
+  
+  // Any other combination - maintain straight flight
+  controlStatus = "Vuelo recto (combinación no definida)";
+}
+
 // ===== Draw gesture info =====
 void drawGestureInfo(HandData hand, int gestureId) {
-  fill(0, 150);
+  if (hand.landmarks.size() > 0) {
+    PVector wrist = hand.landmarks.get(0);
+    fill(0, 150);
+    noStroke();
+    rect(wrist.x - 60, wrist.y + 20, 120, 30);
+    fill(255);
+    textSize(14);
+    textAlign(CENTER, CENTER);
+    String gestureText = (gestureId >= 0 && gestureId < gesture_labels.length) ? gesture_labels[gestureId] : "Unknown";
+    text(gestureText, wrist.x, wrist.y + 35);
+  }
+}
+
+// ===== Draw control status =====
+void drawControlStatus() {
+  fill(0, 200);
   noStroke();
-  rect(10, height - 60, 200, 40);
+  rect(width - 280, 10, 270, 100, 8);
+  
   fill(255);
-  textSize(16);
-  textAlign(LEFT);
-  String gestureText = (gestureId >= 0 && gestureId < gesture_labels.length) ? gesture_labels[gestureId] : "Unknown";
-  text("Gesture: " + gestureText, 20, height - 30);
+  textAlign(LEFT, TOP);
+  textSize(14);
+  text("Control:", width - 270, 20);
+  
+  textSize(18);
+  fill(0, 255, 100);
+  text(controlStatus, width - 270, 45);
+  
+  textSize(12);
+  fill(200);
+  text("Izq: " + getGestureName(leftHandGesture), width - 270, 75);
+  text("Der: " + getGestureName(rightHandGesture), width - 150, 75);
 }
 
-// ===== Point history =====
-void updatePointHistory(HandData hand) {
-  if (hand.landmarks.size() > 8) {
-    PVector indexTip = hand.landmarks.get(8);
-    point_history.add(indexTip.copy());
-    while (point_history.size() > history_length) point_history.remove(0);
+String getGestureName(int gestureId) {
+  if (gestureId < 0 || gestureId >= gesture_labels.length) {
+    return "---";
   }
-}
-
-void drawPointHistory() {
-  if (point_history.size() < 2) return;
-  for (int i = 1; i < point_history.size(); i++) {
-    PVector p1 = point_history.get(i-1);
-    PVector p2 = point_history.get(i);
-    float alpha = map(i, 0, point_history.size(), 50, 255);
-    stroke(255, 100, 100, alpha);
-    strokeWeight(map(i, 0, point_history.size(), 1, 4));
-    line(p1.x, p1.y, p2.x, p2.y);
-  }
+  return gesture_labels[gestureId];
 }
 
 // ===== FPS =====
@@ -142,43 +238,72 @@ void drawFPS() {
 
 // ===== HandData class =====
 class HandData {
+  String label;  // "Left" or "Right"
   ArrayList<PVector> landmarks;
-  HandData() { landmarks = new ArrayList<PVector>(); }
+  
+  HandData() { 
+    label = "";
+    landmarks = new ArrayList<PVector>(); 
+  }
 }
 
-// ===== Gesture classifier =====
+// ===== Gesture classifier - SOLO ABIERTO Y PUÑO =====
 class HandGestureClassifier {
   public int classify(HandData hand) {
     if (hand.landmarks == null || hand.landmarks.size() < 21) return -1;
 
     PVector wrist = hand.landmarks.get(0);
+    
+    // Tips de los dedos
     PVector thumbTip = hand.landmarks.get(4);
     PVector indexTip = hand.landmarks.get(8);
     PVector middleTip = hand.landmarks.get(12);
     PVector ringTip = hand.landmarks.get(16);
     PVector pinkyTip = hand.landmarks.get(20);
+    
+    // Base de los dedos (MCPs)
+    PVector indexMCP = hand.landmarks.get(5);
+    PVector middleMCP = hand.landmarks.get(9);
+    PVector ringMCP = hand.landmarks.get(13);
+    PVector pinkyMCP = hand.landmarks.get(17);
 
-    float dThumb = dist(wrist.x, wrist.y, thumbTip.x, thumbTip.y);
-    float dIndex = dist(wrist.x, wrist.y, indexTip.x, indexTip.y);
-    float dMiddle = dist(wrist.x, wrist.y, middleTip.x, middleTip.y);
-    float dRing = dist(wrist.x, wrist.y, ringTip.x, ringTip.y);
-    float dPinky = dist(wrist.x, wrist.y, pinkyTip.x, pinkyTip.y);
+    // Calcular distancias de las puntas a sus bases
+    float indexExtended = dist(indexMCP.x, indexMCP.y, indexTip.x, indexTip.y);
+    float middleExtended = dist(middleMCP.x, middleMCP.y, middleTip.x, middleTip.y);
+    float ringExtended = dist(ringMCP.x, ringMCP.y, ringTip.x, ringTip.y);
+    float pinkyExtended = dist(pinkyMCP.x, pinkyMCP.y, pinkyTip.x, pinkyTip.y);
+    
+    // Distancias de las bases al wrist
+    float indexBase = dist(wrist.x, wrist.y, indexMCP.x, indexMCP.y);
+    float middleBase = dist(wrist.x, wrist.y, middleMCP.x, middleMCP.y);
+    float ringBase = dist(wrist.x, wrist.y, ringMCP.x, ringMCP.y);
+    float pinkyBase = dist(wrist.x, wrist.y, pinkyMCP.x, pinkyMCP.y);
+    
+    float avgBase = (indexBase + middleBase + ringBase + pinkyBase) / 4.0;
 
-    float avg = (dIndex + dMiddle + dRing + dPinky) / 4.0;
+    // Umbral para detectar dedos extendidos
+    boolean indexOpen = indexExtended > avgBase * 0.7;
+    boolean middleOpen = middleExtended > avgBase * 0.7;
+    boolean ringOpen = ringExtended > avgBase * 0.7;
+    boolean pinkyOpen = pinkyExtended > avgBase * 0.7;
 
-    boolean thumbOpen  = dThumb  > avg * 0.5;
-    boolean indexOpen  = dIndex  > avg * 0.5;
-    boolean middleOpen = dMiddle > avg * 0.5;
-    boolean ringOpen   = dRing   > avg * 0.5;
-    boolean pinkyOpen  = dPinky  > avg * 0.5;
+    // Contar cuántos dedos están extendidos
+    int openCount = 0;
+    if (indexOpen) openCount++;
+    if (middleOpen) openCount++;
+    if (ringOpen) openCount++;
+    if (pinkyOpen) openCount++;
 
-    if (indexOpen && middleOpen && ringOpen && pinkyOpen) return 0; // Open !
-    else if (indexOpen && middleOpen && !ringOpen && pinkyOpen) return 1; // Three !
-    else if (indexOpen && middleOpen && ringOpen && !pinkyOpen) return 2; // Point
-    else if (indexOpen && middleOpen && !ringOpen && !pinkyOpen) return 3; // Peace !
-    else if (indexOpen && !middleOpen && !ringOpen && pinkyOpen) return 4; // OK !
-    else if (pinkyOpen && thumbOpen && !indexOpen && !middleOpen && !ringOpen) return 5; // Call +-
+    // ABIERTO: al menos 3 dedos extendidos
+    if (openCount >= 3) {
+      return 0; // Abierto
+    }
+    
+    // PUÑO: 0 o 1 dedo extendido
+    if (openCount <= 1) {
+      return 1; // Puño
+    }
 
-    return -1;
+    return -1; // Gesto no reconocido
   }
 }
