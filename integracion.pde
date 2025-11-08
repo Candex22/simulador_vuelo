@@ -7,27 +7,23 @@ import processing.data.*;
 Socket socket;
 BufferedReader input;
 
-ArrayList<PVector> mpLandmarks = new ArrayList<PVector>();
+ArrayList<HandData> mpHands = new ArrayList<HandData>();
 HandGestureClassifier handClassifier = new HandGestureClassifier();
-String[] gesture_labels = { "Open", "Fist", "Point", "Peace", "OK", "Rock" };
 
-// Historial de la punta del índice (para trail 2D opcional)
-ArrayList<PVector> point_history = new ArrayList<PVector>();
-int history_length = 16;
+
+// Two-hand control state
+int leftHandGesture = -1;
+int rightHandGesture = -1;
+int lastValidLeftGesture = -1;
+int lastValidRightGesture = -1;
+int framesWithoutDetection = 0;
+int maxFramesWithoutDetection = 1; // Tolerancia de ~10 frames sin detección
+String controlStatus = "Sin control";
 
 // FPS simple para debug
 int fps = 0;
 int lastTime = 0;
 int frameCountFPS = 0;
-
-// Flags de control por gesto (no pisan teclado)
-boolean gMoveForward=false, gMoveBackward=false;
-boolean gMoveLeft=false, gMoveRight=false;
-boolean gSpeedUp=false, gSpeedDown=false;
-
-// Último gesto reconocido
-int lastGestureId = -1;
-String lastGestureText = "—";
 
 // ===================== Terreno (tu código) =====================
 import java.util.ArrayList;
@@ -36,14 +32,13 @@ PGraphics horizonteBuffer;
 PGraphics mascaraHorizonte;
 
 // ===================== Cámara =====================
-// Variables globales (Asegúrate de que 'roll' exista)  
 float camX = 0, camY = 300, camZ = 0;
-float currentSpeed = 1;
-float maxSpeed = 20;
-float currentMaxSpeed = 20; // Nueva variable para la velocidad máxima actual
-float maxSpeedStep = 5; // Cantidad para aumentar o disminuir la velocidad máxima
-float acceleration = 0.5;
-float deceleration = 0.2;
+float currentSpeed = 0.5;        // era 1
+float maxSpeed = 8;              // era 20
+float currentMaxSpeed = 8;       // era 20
+float maxSpeedStep = 2;          // era 5
+float acceleration = 0.2;        // era 0.5
+float deceleration = 0.1; 
 float yaw = 0, pitch = 0, roll = 0;
 float sensitivity = 0.005;
 float cameraGroundOffset = 5;
@@ -54,8 +49,8 @@ float damping = 0.99;
 boolean moveForward = false, moveBackward = false;
 boolean moveLeft = false, moveRight = false;
 boolean moveUp = false, moveDown = false;
-boolean accelerate = false, decelerate = false; // aceleracion y desaleracion
-boolean speedUp = false, speedDown = false; // Nuevas variables para R y F
+boolean accelerate = false, decelerate = false;
+boolean speedUp = false, speedDown = false;
 
 // ===================== Mundo =====================
 int chunkSize = 500;
@@ -66,7 +61,7 @@ HashMap<String, ArrayList<PVector>> cloudsPerChunk = new HashMap<String, ArrayLi
 HashMap<String, Boolean> cloudsGeneratedForChunk = new HashMap<String, Boolean>();
 HashMap<String, ArrayList<PVector>> treesPerChunk = new HashMap<String, ArrayList<PVector>>();
 HashMap<String, ArrayList<PVector>> buildingsPerChunk = new HashMap<String, ArrayList<PVector>>();
-HashMap<String, Integer> chunkTypes = new HashMap<String, Integer>(); // 0=pradera,1=ciudad,2=montaña,3=aeropuerto  
+HashMap<String, Integer> chunkTypes = new HashMap<String, Integer>();
 HashMap<String, Boolean> airportPerChunk = new HashMap<String, Boolean>();
 
 float gridSize = 40;
@@ -74,11 +69,10 @@ float noiseScale = 0.01;
 float terrainHeightScale = 22;
 float mountainHeightScale = 160;
 
-// Puedes poner esta variable al inicio de tu sketch, fuera de cualquier función
 final float MAX_WORLD_HEIGHT = 1000;
 
 // Ciudad
-float cityBaseY = 11;      // Terreno plano bajo la ciudad (constante)
+float cityBaseY = 11;
 float roadWidth = 40;
 float sidewalkWidth = 10;
 float sidewalkHeight = 0.1;
@@ -102,8 +96,7 @@ int cloudCount = 60;
 float cloudY = 260;
 
 // ===================== HUD (overlay 2D) =====================
-// No modifica controles ni lógica de terreno. Solo dibuja por encima y usa datos de cámara existentes.
-float hudSpeed = 0;  // velocidad instantánea (u/seg)
+float hudSpeed = 0;
 float prevX, prevY, prevZ;
 int prevT = 0;
 
@@ -111,10 +104,9 @@ int prevT = 0;
 String keyOf(int cx, int cz){ return cx + "," + cz; }
 
 float hash2i(int x, int y){
-  int h = x * 374761393 + y * 668265263; // 32-bit mix
+  int h = x * 374761393 + y * 668265263;
   h = (h ^ (h >> 13)) * 1274126177;
   h ^= (h >> 16);
-  // [0,1)
   return (h & 0x7fffffff) / (float)0x80000000;
 }
 
@@ -125,6 +117,9 @@ float smoothstep(float a, float b, float x){
 
 float length2(float x, float z){ return sqrt(x*x+z*z); }
 
+String lastControlStatus = "";
+
+
 // ===================== Setup/Draw =====================
 void setup(){
   size(800, 600, P3D);
@@ -134,7 +129,6 @@ void setup(){
   horizonteBuffer = createGraphics(120, 120, P2D);
   mascaraHorizonte = createGraphics(120, 120, P2D);
 
-  // Preparamos la máscara circular solo una vez
   mascaraHorizonte.beginDraw();
   mascaraHorizonte.background(0);
   mascaraHorizonte.noStroke();
@@ -155,20 +149,24 @@ void setup(){
 void draw(){
   background(135,206,235);
 
-  // ---- 1) Leer landmarks + clasificar gesto + aplicar a controles ----
-  readMediaPipeLandmarks();
-  int gestureId = -1;
-  if (mpLandmarks.size() == 21){
-    HandData hand = new HandData();
-    hand.landmarks = mpLandmarks;
-    gestureId = handClassifier.classify(hand);
-    lastGestureId = gestureId;
-    lastGestureText = (gestureId >= 0 && gestureId < gesture_labels.length) ? gesture_labels[gestureId] : "Unknown";
-    applyGestureToControls(gestureId);          // setea gMove*, gSpeed* para este frame
-    updatePointHistory(hand);                   // opcional: trail del índice
-  } else {
-    clearGestureControls(); // si no hay mano, no forzar movimiento
+  // ---- 1) Leer landmarks de ambas manos + clasificar gestos + aplicar controles ----
+  readMediaPipeHands();
+  leftHandGesture = -1;
+  rightHandGesture = -1;
+  
+  // Classify gestures for each hand
+  for (HandData hand : mpHands) {
+    if (hand.landmarks.size() == 21) {
+      int gestureId = handClassifier.classifySimple(hand);
+      if (hand.label.equals("Left")) {
+        leftHandGesture = gestureId;
+      } else if (hand.label.equals("Right")) {
+        rightHandGesture = gestureId;
+      }
+    }
   }
+  
+  applyTwoHandControl();
 
   // ---- 2) Mundo 3D (tu ciclo original) ----
   updateCamera();
@@ -178,7 +176,7 @@ void draw(){
   int chunkZ = floor(camZ / chunkSize);
   int viewRange = 2;
 
-  // ================== Nubes: limpiar chunks fuera de vista ==================
+  // Nubes: limpiar chunks fuera de vista
   ArrayList<String> visibleChunks = new ArrayList<String>();
   for (int dx=-viewRange; dx<=viewRange; dx++){
     for (int dz=-viewRange; dz<=viewRange; dz++){
@@ -190,7 +188,7 @@ void draw(){
   for (String k : cloudsPerChunk.keySet()){
     if (!visibleChunks.contains(k)){
       for (PVector c : cloudsPerChunk.get(k)){
-        clouds.remove(c); // eliminar de la lista global
+        clouds.remove(c);
       }
       keysToRemove.add(k);
     }
@@ -199,72 +197,117 @@ void draw(){
     cloudsPerChunk.remove(k);
   }
 
-  // ================== Terreno + contenido ==================
+  // Terreno + contenido
   for (int dx = -viewRange; dx <= viewRange; dx++){
     for (int dz = -viewRange; dz <= viewRange; dz++){
       int ncx = chunkX + dx;
       int ncz = chunkZ + dz;
 
-      generateCloudsForChunk(ncx, ncz); // genera nubes 1 vez por chunk
+      generateCloudsForChunk(ncx, ncz);
       drawChunk(ncx, ncz);
     }
   }
 
-  // Nubes (al final, transparentes y billboard)
   drawClouds();
 
   // ====== HUD + overlays 2D ======
   updateHUDData();
   drawHUD();
-
-  // Dibujar info del gesto + FPS + (opcional) trail en overlay 2D
   drawGestureOverlay();
   drawFPS();
-  calculateFPS(); // actualizar contador
+  calculateFPS();
 }
 
 // ===================== Integración con gestos =====================
-void clearGestureControls(){
-  gMoveForward = gMoveBackward = false;
-  gMoveLeft = gMoveRight = false;
-  gSpeedUp = gSpeedDown = false;
-}
-
-void applyGestureToControls(int gestureId){
-  clearGestureControls();
-  if (gestureId == -1) return;
-  String g = gesture_labels[gestureId];
-  // Edita el mapping a gusto
-  if (g.equals("Open")) {
-    gMoveBackward = true;
-  } else if (g.equals("Fist")) {
-    gMoveForward = true;
-  } else if (g.equals("Peace")) {
-    gMoveLeft = true;
-  } else if (g.equals("OK")) {
-    gMoveRight = true;
-  } else if (g.equals("Rock")) {
-    gSpeedUp = true;     // subir marcha
-  } else if (g.equals("Point")) {
-    gSpeedDown = true;   // bajar marcha
+void applyTwoHandControl() {
+  // 0 = Open, 1 = Fist
+  boolean leftValid = (leftHandGesture == 0 || leftHandGesture == 1);
+  boolean rightValid = (rightHandGesture == 0 || rightHandGesture == 1);
+  
+  if (!leftValid || !rightValid) {
+    // Solo mostrar "Sin control" si han pasado suficientes frames sin detección
+    if (framesWithoutDetection > maxFramesWithoutDetection) {
+      String newStatus = "Sin control detectado";
+      if (!newStatus.equals(lastControlStatus)) {
+        controlStatus = newStatus;
+        lastControlStatus = newStatus;
+        // Reset controls only when we lose detection
+        moveForward = false;
+        moveBackward = false;
+        moveLeft = false;
+        moveRight = false;
+      }
+    }
+    return;
   }
+  
+  // Determinar nuevo estado basado en gestos
+  String newStatus = "Vuelo recto";
+  boolean newMoveForward = false;
+  boolean newMoveBackward = false;
+  boolean newMoveLeft = false;
+  boolean newMoveRight = false;
+  
+  // Both hands open (0) - Pitch up
+  if (leftHandGesture == 0 && rightHandGesture == 0) {
+    newStatus = "Cabeceo ARRIBA ↑";
+    newMoveBackward = true;
+  }
+  // Both hands closed/fist (1) - Pitch down
+  else if (leftHandGesture == 1 && rightHandGesture == 1) {
+    newStatus = "Cabeceo ABAJO ↓";
+    newMoveForward = true;
+  }
+  // Right open + Left closed - Turn right
+  else if (rightHandGesture == 0 && leftHandGesture == 1) {
+    newStatus = "Giro IZQUIERDA ←";
+    newMoveRight = true;
+  }
+  // Left open + Right closed - Turn left
+  else if (leftHandGesture == 0 && rightHandGesture == 1) {
+    newStatus = "Giro DERECHA →";
+    newMoveLeft = true;
+  }
+  
+  // Solo actualizar si cambió el estado
+  if (!newStatus.equals(lastControlStatus)) {
+    controlStatus = newStatus;
+    lastControlStatus = newStatus;
+  }
+  
+  // Aplicar controles
+  moveForward = newMoveForward;
+  moveBackward = newMoveBackward;
+  moveLeft = newMoveLeft;
+  moveRight = newMoveRight;
 }
 
-// ===== Leer landmarks desde Python (JSON por línea) =====
-void readMediaPipeLandmarks() {
+// ===== Leer manos desde Python =====
+void readMediaPipeHands() {
+  mpHands.clear();
   if (input == null) return;
   try {
     if (input.ready()) {
       String line = input.readLine();
       if (line != null && line.length() > 0) {
-        JSONArray arr = parseJSONArray(line);
-        mpLandmarks.clear();
-        if (arr != null) {
-          for (int i = 0; i < arr.size(); i++) {
-            JSONArray lm = arr.getJSONArray(i);
-            float x = lm.getFloat(0) * width;
-            float y = lm.getFloat(1) * height;
-            mpLandmarks.add(new PVector(x, y));
+        JSONArray handsArray = parseJSONArray(line);
+        if (handsArray != null) {
+          for (int h = 0; h < handsArray.size(); h++) {
+            JSONObject handObj = handsArray.getJSONObject(h);
+            String label = handObj.getString("label");
+            JSONArray landmarksArray = handObj.getJSONArray("landmarks");
+            
+            HandData hand = new HandData();
+            hand.label = label;
+            
+            for (int i = 0; i < landmarksArray.size(); i++) {
+              JSONArray lm = landmarksArray.getJSONArray(i);
+              float x = lm.getFloat(0) * width;
+              float y = lm.getFloat(1) * height;
+              hand.landmarks.add(new PVector(x, y));
+            }
+            
+            mpHands.add(hand);
           }
         }
       }
@@ -274,55 +317,39 @@ void readMediaPipeLandmarks() {
   }
 }
 
-// ===== Dibujo overlay del gesto + trail =====
+// ===== Dibujo overlay del gesto =====
 void drawGestureOverlay(){
-  // overlay 2D
   hint(DISABLE_DEPTH_TEST);
   noLights();
   camera();
   ortho();
 
-  // Caja del gesto
   fill(0, 180);
   noStroke();
-  rect(10, 10, 220, 60, 8);
+  rect(10, 10, 280, 90, 8);
+  
   fill(255);
-  textAlign(LEFT, CENTER);
+  textAlign(LEFT, TOP);
   textSize(14);
-  text("Gesto:", 20, 30);
-  textSize(20);
-  text(lastGestureText, 20, 55);
+  text("Control:", 20, 20);
+  
+  textSize(18);
+  fill(0, 255, 100);
+  text(controlStatus, 20, 45);
+  
+  textSize(12);
+  fill(200);
+  text("Izq: " + getGestureName(leftHandGesture), 20, 70);
+  text("Der: " + getGestureName(rightHandGesture), 150, 70);
 
-  // Trail de la punta del índice (si hay)
-  drawPointHistory2D();
-
-  // volver al 3D para próximos frames
   hint(ENABLE_DEPTH_TEST);
   perspective(PI / 3.0, float(width) / height, 0.1, 10000);
 }
 
-// ===== Trail en 2D de la punta del índice =====
-void updatePointHistory(HandData hand) {
-  if (hand.landmarks.size() > 8) {
-    PVector indexTip = hand.landmarks.get(8);
-    // indexTip está en coords de pantalla porque ya convertimos x,y en readMediaPipeLandmarks()
-    point_history.add(indexTip.copy());
-    while (point_history.size() > history_length) point_history.remove(0);
-  }
-}
-
-void drawPointHistory2D() {
-  if (point_history.size() < 2) return;
-  stroke(255, 100, 100, 180);
-  for (int i = 1; i < point_history.size(); i++) {
-    PVector p1 = point_history.get(i-1);
-    PVector p2 = point_history.get(i);
-    float alpha = map(i, 0, point_history.size(), 40, 200);
-    stroke(255, 100, 100, alpha);
-    strokeWeight(map(i, 0, point_history.size(), 1, 4));
-    line(p1.x, p1.y, p2.x, p2.y);
-  }
-  noStroke();
+String getGestureName(int gestureId) {
+  if (gestureId == 0) return "Abierto";
+  if (gestureId == 1) return "Puño";
+  return "---";
 }
 
 // ===== FPS =====
@@ -350,50 +377,42 @@ void drawFPS() {
 
 // ===================== Cámara =====================
 void updateCamera() {
-  // Combinar teclado + gestos
-  boolean fwd  = moveForward  || gMoveForward;
-  boolean back = moveBackward || gMoveBackward;
-  boolean left = moveLeft     || gMoveLeft;
-  boolean right= moveRight    || gMoveRight;
-  boolean spUp = speedUp      || gSpeedUp;
-  boolean spDn = speedDown    || gSpeedDown;
-
-  // 1. ROTACIÓN DE LA CÁMARA
-  if (left)  yaw -= 0.05;
-  if (right) yaw += 0.05;
-  if (fwd)   pitch -= 0.02;
-  if (back)  pitch += 0.02;
+  // 1. ROTACIÓN
+  if (moveLeft)  yaw -= 0.05;
+  if (moveRight) yaw += 0.05;
+  if (moveForward)   pitch -= 0.02;
+  if (moveBackward)  pitch += 0.02;
   pitch = constrain(pitch, -PI/2 + 0.1, PI/2 - 0.1);
 
   float targetRoll = 0;
-  if (right) targetRoll = -PI/8;
-  if (left)  targetRoll =  PI/8;
+  if (moveRight) targetRoll = -PI/8;
+  if (moveLeft)  targetRoll =  PI/8;
   roll = lerp(roll, targetRoll, 0.1);
 
   // 2. CONTROL DE VELOCIDAD
-  if (spUp)  currentSpeed += acceleration;
-  if (spDn)  currentSpeed -= acceleration;
+  if (speedUp)  currentSpeed += acceleration;
+  if (speedDown)  currentSpeed -= acceleration;
   currentSpeed = constrain(currentSpeed, 0, currentMaxSpeed);
 
-  // 3. DIRECCIÓN COMPLETA (con pitch)
+  // 3. DIRECCIÓN COMPLETA
   PVector lookDir = new PVector(
-    cos(pitch) * cos(yaw),   // X
-    sin(pitch),              // Y
-    cos(pitch) * sin(yaw)    // Z
+    cos(pitch) * cos(yaw),
+    sin(pitch),
+    cos(pitch) * sin(yaw)
   );
 
   lookDir.normalize();
   PVector movement = PVector.mult(lookDir, currentSpeed);
 
-  // 4. AMORTIGUACIÓN E INERCIA
+  // 4. AMORTIGUACIÓN
   velocity.x += movement.x;
   velocity.z += movement.z;
   velocity.mult(damping);
   if (velocity.mag() > maxSpeed) velocity.normalize().mult(maxSpeed);
 
-  // 5. APLICAR MOVIMIENTO A LA CÁMARA
+  // 5. APLICAR MOVIMIENTO
   camX += velocity.x;
-  camY += movement.y; // vertical sigue la cámara
+  camY += movement.y;
   camZ += velocity.z;
 
   // 6. LÍMITES Y COLISIÓN
@@ -411,9 +430,8 @@ void applyCamera(){
   
   PVector look = new PVector(lookX, lookY, lookZ);
   PVector right = new PVector(cos(yaw + PI/2.0), 0, sin(yaw + PI/2.0));
-  PVector up = PVector.cross(look, right, null); // Cálculo correcto del vector 'up'
+  PVector up = PVector.cross(look, right, null);
 
-  // Rotación del vector 'up' para el roll
   PVector rolledUp = new PVector();
   float cosRoll = cos(roll);
   float sinRoll = sin(roll);
@@ -426,40 +444,34 @@ void applyCamera(){
 }
 
 // ===================== Biomas y alturas =====================
-// Tipos de chunk deterministas + exclusión de ciudades alrededor de montañas
 int getChunkType(int cx, int cz){
   String k = keyOf(cx,cz);
-  // 3) Aeropuerto tiene prioridad y es determinista
   if (isAirportChunk(cx, cz)) {
-    chunkTypes.put(k, 3); // 3=aeropuerto
+    chunkTypes.put(k, 3);
     return 3;
   }
-  // Si ya se resolvió antes (y NO era aeropuerto), devolvés
   if (chunkTypes.containsKey(k)) return chunkTypes.get(k);
-  // Base determinista (ruido + hash) para 0/1/2
   float r = 0.65*noise((cx+seed)*0.17, (cz-seed)*0.17) + 0.35*hash2i(cx,cz);
   int type;
-  if (r > 0.78)      type = 2; // montaña
-  else if (r > 0.10) type = 1; // ciudad
-  else               type = 0; // pradera
-  // Si es montaña, evitar ciudades pegadas (4-neighborhood)
+  if (r > 0.78)      type = 2;
+  else if (r > 0.10) type = 1;
+  else               type = 0;
   if (type == 2){
     int[][] nbs = {{1,0},{-1,0},{0,1},{0,-1}};
     for (int i=0;i<nbs.length;i++){
       int nx=cx+nbs[i][0], nz=cz+nbs[i][1];
       String nk = keyOf(nx,nz);
-      // No tocar si el vecino es aeropuerto
       if (isAirportChunk(nx, nz)) {
         chunkTypes.put(nk, 3);
         continue;
       }
       if (!chunkTypes.containsKey(nk)){
         float rr = 0.65*noise((nx+seed)*0.17, (nz-seed)*0.17) + 0.35*hash2i(nx,nz);
-        int t2 = (rr > 0.78) ? 2 : 0; // vecino: montaña o pradera, no ciudad
+        int t2 = (rr > 0.78) ? 2 : 0;
         chunkTypes.put(nk, t2);
       } else {
         int cur = chunkTypes.get(nk);
-        if (cur == 1) chunkTypes.put(nk, 0); // ciudad -> pradera
+        if (cur == 1) chunkTypes.put(nk, 0);
       }
     }
   }
@@ -467,18 +479,16 @@ int getChunkType(int cx, int cz){
   return type;
 }
 
-// Altura con máscara suave para montaña; ciudad plana
 float getTerrainHeight(float x, float z){
   int cx = floor(x / chunkSize);
   int cz = floor(z / chunkSize);
   int ct = getChunkType(cx, cz);
 
   if (ct == 3){
-    return cityBaseY; // aeropuerto plano
+    return cityBaseY;
   } else if (ct == 1){
-    return cityBaseY; // ciudad plana
+    return cityBaseY;
   } else if (ct == 2){
-    
     float centerX = cx*chunkSize + chunkSize*0.5;
     float centerZ = cz*chunkSize + chunkSize*0.5;
     float d = dist(x, z, centerX, centerZ);
@@ -494,15 +504,10 @@ float getTerrainHeight(float x, float z){
   }
 }
 
-
-// ===================== Rutas/edificios: lógica única =====================
-// Calles a cada 200, con 40 de asfalto + 10 de acera por lado (60 total)
 boolean isRoadLocal(float localX, float localZ){
-  // verticales
   for (int rx = 0; rx <= chunkSize; rx += 200){
     if (abs(localX - rx) < (roadWidth/2 + sidewalkWidth + 5)) return true;
   }
-  // horizontales
   for (int rz = 0; rz <= chunkSize; rz += 200){
     if (abs(localZ - rz) < (roadWidth/2 + sidewalkWidth + 5)) return true;
   }
@@ -510,10 +515,9 @@ boolean isRoadLocal(float localX, float localZ){
 }
 
 boolean isInsideBuildingFootprint(float localX, float localZ){
-  // edificios 60x60 centrados en celdas (100,100), (300,100), ...
   for (int i = 100; i < chunkSize; i += 200){
     for (int j = 100; j < chunkSize; j += 200){
-      float cx = i + 10 + 30; // +10 del offset original, centro de 60x60
+      float cx = i + 10 + 30;
       float cz = j + 10 + 30;
       if (abs(localX - cx) < 35 && abs(localZ - cz) < 35) return true;
     }
@@ -530,9 +534,7 @@ void drawChunk(int cx, int cz){
 
   drawTerrain(baseX, baseZ, type);
 
-  // Contenido SEGÚN tipo
   if (type == 0) {
-    // ✅ Pradera: árboles solamente (ya no se meten en ciudad ni aeropuerto)
     drawPradera(baseX, baseZ, key, type);
   } else if (type == 1) {
     drawCiudad(baseX, baseZ, key);
@@ -542,28 +544,24 @@ void drawChunk(int cx, int cz){
 }
 
 boolean isAirportChunk(int cx, int cz){
-  // Aeropuerto en el spawn y luego cada 100 chunks SOLO por ejes (no diagonales)
   return ( (cx == 0 && abs(cz) % 100 == 0) || (cz == 0 && abs(cx) % 100 == 0) );
 }
 
 void drawAirport(float baseX, float baseZ){ 
   float y = getTerrainHeight(baseX+chunkSize/2, baseZ+chunkSize/2); 
   
-  // pista larga 
   pushMatrix(); 
   translate(baseX + chunkSize/2, y+1, baseZ + chunkSize/2); 
   fill(50); 
   box(chunkSize*0.8, 2, 100);
   popMatrix(); 
   
-  // torre de control 
   pushMatrix(); 
   translate(baseX + chunkSize/2 - 50, y+50, baseZ + chunkSize/4); 
   fill(120,120,160); 
   box(40,100,40); 
   popMatrix();
   
-  // hangar 
   pushMatrix(); 
   translate(baseX + chunkSize/2 + 100, y+25, baseZ + chunkSize/2); 
   fill(150,80,80); 
@@ -575,11 +573,9 @@ void generateCloudsForChunk(int cx, int cz){
   String key = keyOf(cx, cz);
   if (cloudsPerChunk.containsKey(key)) return;
 
-  // Alturas para los dos "pisos" de nubes
   float cloudY_low = 500;
   float cloudY_high = 900;
 
-  // Generar la primera tanda de nubes (piso inferior)
   int cloudsCount_low = 8 + (int)random(0,1);
   ArrayList<PVector> localClouds = new ArrayList<PVector>();
   for(int i=0; i<cloudsCount_low; i++){
@@ -591,7 +587,6 @@ void generateCloudsForChunk(int cx, int cz){
     localClouds.add(c);
   }
 
-  // Generar la segunda tanda de nubes (piso superior)
   int cloudsCount_high = 8 + (int)random(0,1);
   for(int i=0; i<cloudsCount_high; i++){
     float x = cx*chunkSize + random(0, chunkSize);
@@ -606,10 +601,10 @@ void generateCloudsForChunk(int cx, int cz){
 }
 
 void drawTerrain(float baseX, float baseZ, int type){
-  if (type == 2) fill(139,137,137);      // montaña
-  else if (type == 1) fill(80, 120, 80); // ciudad (debajo)
-  else if (type == 3) fill(90, 110, 90); // aeropuerto (suelo base)
-  else fill(34,139,34);                  // pradera
+  if (type == 2) fill(139,137,137);
+  else if (type == 1) fill(80, 120, 80);
+  else if (type == 3) fill(90, 110, 90);
+  else fill(34,139,34);
 
   stroke(0,80,0,50);
   for (float x = baseX; x < baseX + chunkSize; x += gridSize){
@@ -636,27 +631,24 @@ void drawPradera(float baseX, float baseZ, String chunkKey, int chunkType){
   } else {
     trees = new ArrayList<PVector>();
     int attempts = 0, maxAttempts = 120;
-    // Generación de árboles
     while (trees.size() < 10 && attempts < maxAttempts){
       float x = baseX + random(0, chunkSize);
       float z = baseZ + random(0, chunkSize);
       float y = getTerrainHeight(x, z);
     
-      // Prohibir árboles en calles o edificios para cualquier chunk que no sea montaña
       float lx = x - baseX;
       float lz = z - baseZ;
       if (isRoadLocal(lx, lz) || isInsideBuildingFootprint(lx, lz)){
         attempts++; continue;
       }
     
-      // Chequeo extra: no sobrepasar altura de edificios vecinos
       int cx = floor(x / chunkSize);
       int cz = floor(z / chunkSize);
       String k = keyOf(cx, cz);
       if (aabbsPerChunk.containsKey(k)){
         boolean collision = false;
         for (AABB box : aabbsPerChunk.get(k)){
-          if (y + 40 > box.minY && y < box.maxY){ // altura tronco + margen
+          if (y + 40 > box.minY && y < box.maxY){
             collision = true; break;
           }
         }
@@ -668,14 +660,11 @@ void drawPradera(float baseX, float baseZ, String chunkKey, int chunkType){
     treesPerChunk.put(chunkKey, trees);
   }
 
-  // Dibujo árboles
   for (PVector t : trees){
     pushMatrix();
     translate(t.x, t.y, t.z);
-    // Tronco
     fill(139,69,19);
     box(10, 40, 10);
-    // Copa
     translate(0, 40, 0);
     fill(0,128,0);
     sphere(25);
@@ -694,10 +683,9 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     buildings = new ArrayList<PVector>();
     aabbs = new ArrayList<AABB>();
 
-    // Colocar edificios en celdas, fuera de calles
     for (int i = 100; i < chunkSize; i += 200){
       for (int j = 100; j < chunkSize; j += 200){
-        float lx = i + 10 + 30;  // centro local
+        float lx = i + 10 + 30;
         float lz = j + 10 + 30;
         float x = baseX + lx;
         float z = baseZ + lz;
@@ -706,7 +694,6 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
         buildings.add(new PVector(x, y, z));
 
         float h = 110 + (int)(noise(x * 0.01, z * 0.01) * 70);
-        // AABB para colisión
         AABB box = new AABB(
           x - 30, y, z - 30,
           x + 30, y + h, z + 30
@@ -718,7 +705,6 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     aabbsPerChunk.put(chunkKey, aabbs);
   }
 
-  // Asfalto continuo (vertical + horizontal), leve offset para evitar z-fighting
   float yRoad = cityBaseY + 1;
 
   // Verticales
@@ -730,7 +716,6 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     box(roadWidth, 1, chunkSize);
     popMatrix();
 
-    // Aceras a ambos lados (continuas)
     fill(150);
     pushMatrix();
     translate(baseX + rx - roadWidth/2 - sidewalkWidth/2, yRoad + sidewalkHeight/2, baseZ + chunkSize/2);
@@ -741,7 +726,6 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     box(sidewalkWidth, sidewalkHeight, chunkSize);
     popMatrix();
 
-    // Línea discontinua central
     for (float z = 0; z < chunkSize; z += 40){
       fill(255,255,0);
       pushMatrix();
@@ -760,7 +744,6 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     box(chunkSize, 1, roadWidth);
     popMatrix();
 
-    // Aceras a ambos lados
     fill(150);
     pushMatrix();
     translate(baseX + chunkSize/2, yRoad + sidewalkHeight/2, baseZ + rz - roadWidth/2 - sidewalkWidth/2);
@@ -771,7 +754,6 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     box(chunkSize, sidewalkHeight, sidewalkWidth);
     popMatrix();
 
-    // Línea discontinua central
     for (float x = 0; x < chunkSize; x += 40){
       fill(255, 255, 0);
       pushMatrix();
@@ -781,7 +763,7 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     }
   }
 
-  // Edificios (transparencia si cámara cerca)
+  // Edificios
   for (int i=0; i<buildings.size(); i++){
     PVector b = buildings.get(i);
     float h = 110 + (int)(noise(b.x * 0.01, b.z * 0.01) * 70);
@@ -792,7 +774,7 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
     translate(b.x, b.y + h/2.0, b.z);
   
     if (near){
-      fill(100, 180); // alpha
+      fill(100, 180);
     } else {
       fill(100);
     }
@@ -805,7 +787,6 @@ void drawCiudad(float baseX, float baseZ, String chunkKey){
 void resolveBuildingCollision(){
   int cx = floor(camX / chunkSize);
   int cz = floor(camZ / chunkSize);
-  // revisar el chunk actual y vecinos por seguridad
   for (int dx=-1; dx<=1; dx++){
     for (int dz=-1; dz<=1; dz++){
       String k = keyOf(cx+dx, cz+dz);
@@ -813,7 +794,6 @@ void resolveBuildingCollision(){
       ArrayList<AABB> list = aabbsPerChunk.get(k);
       for (AABB box : list){
         if (box.contains(camX, camY, camZ)){
-          // Empuje suave hacia la cara más cercana en XZ (no tocamos Y para permitir subir por afuera)
           float pushX = min(abs(camX - box.minX), abs(box.maxX - camX));
           float pushZ = min(abs(camZ - box.minZ), abs(box.maxZ - camZ));
           if (pushX < pushZ){
@@ -829,14 +809,13 @@ void resolveBuildingCollision(){
   }
 }
 
-// ===================== Nubes (sin colisión) =====================
+// ===================== Nubes =====================
 void drawClouds(){ 
   noStroke(); 
   fill(255, 255, 255, 220);
   for (PVector c : clouds){ 
     float d = dist(camX, camZ, c.x, c.z); 
-    float s = map(d, 0, 1200, 120, 40); // más chica si lejos 
-    // Billboard: rotar para mirar a la cámara 
+    float s = map(d, 0, 1200, 120, 40);
     pushMatrix(); 
     translate(c.x, c.y, c.z); 
     float ang = atan2(camX - c.x, camZ - c.z); 
@@ -855,60 +834,52 @@ void drawClouds(){
   } 
 }
 
-// ===================== Cabina 2D (HUD) =====================
-// Calcula velocidad instantánea a partir del desplazamiento de la cámara
+// ===================== HUD =====================
 void updateHUDData(){
   int t = millis();
   if (prevT == 0){
     prevX = camX; prevY = camY; prevZ = camZ; prevT = t; hudSpeed = 0;
     return;
   }
-  float dt = max(1, t - prevT) / 1000.0; // segundos, evita división por cero
+  float dt = max(1, t - prevT) / 1000.0;
   float dx = camX - prevX;
   float dy = camY - prevY;
   float dz = camZ - prevZ;
   float d = sqrt(dx*dx + dy*dy + dz*dz);
-  hudSpeed = d / dt; // unidades por segundo
+  hudSpeed = d / dt;
   prevX = camX; prevY = camY; prevZ = camZ; prevT = t;
 }
 
 void drawHUD(){
-  // Dibujo en overlay 2D sin profundidad ni luces
   hint(DISABLE_DEPTH_TEST);
   noLights();
   camera();
   ortho();
 
   pushStyle();
-  // Panel inferior
   noStroke();
   fill(0, 120);
   rect(0, height-160, width, 160);
 
-  // ------- Horizonte artificial -------
+  // Horizonte artificial
   pushMatrix();
   translate(width*0.22, height-80);
 
   horizonteBuffer.beginDraw();
-  horizonteBuffer.background(0, 0);  // transparente
+  horizonteBuffer.background(0, 0);
   horizonteBuffer.translate(60, 60);
   horizonteBuffer.noStroke();
 
   horizonteBuffer.pushMatrix();
-  // desplazamiento por pitch
   horizonteBuffer.translate(0, map(pitch, -PI/4, PI/4, -40, 40));
-  // rotación por roll
   horizonteBuffer.rotate(-roll);
 
-  // cielo
   horizonteBuffer.fill(70,130,180);
   horizonteBuffer.rect(-200, -200, 400, 200);
 
-  // tierra
   horizonteBuffer.fill(139,69,19);
   horizonteBuffer.rect(-200, 0, 400, 200);
 
-  // línea de horizonte
   horizonteBuffer.stroke(0);
   horizonteBuffer.strokeWeight(1.5);
   horizonteBuffer.line(-400, 0, 400, 0);
@@ -916,18 +887,15 @@ void drawHUD(){
 
   horizonteBuffer.endDraw();
 
-  // Aplicamos la máscara y dibujamos
   PImage hImg = horizonteBuffer.get();
   hImg.mask(mascaraHorizonte.get());
   image(hImg, -60, -60);
 
-  // Contorno
   noFill();
   stroke(255);
   strokeWeight(3);
   ellipse(0, 0, 120, 120);
 
-  // Marcas
   stroke(255,120,0);
   strokeWeight(3);
   line(-30, 0, 30, 0);
@@ -941,7 +909,7 @@ void drawHUD(){
 
   popMatrix();
 
-  // ------- Altímetro (rectángulo digital) -------
+  // Altímetro
   pushMatrix();
   translate(width*0.44, height-80);
   stroke(255);
@@ -951,12 +919,12 @@ void drawHUD(){
   fill(255);
   textAlign(CENTER, CENTER);
   textSize(12);
-  text("ALTURA", 0, -40);   // título encima
+  text("ALTURA", 0, -40);
   textSize(16);
   text(nf(camY,0,1)+" m", 0, 0);
   popMatrix();
 
-  // ------- Velocímetro (rectángulo digital) -------
+  // Velocímetro
   pushMatrix();
   translate(width*0.60, height-80);
   stroke(255);
@@ -966,18 +934,17 @@ void drawHUD(){
   fill(255);
   textAlign(CENTER, CENTER);
   textSize(12);
-  text("VELOCIDAD", 0, -40); // título encima
+  text("VELOCIDAD", 0, -40);
   textSize(16);
   text(nf(hudSpeed,0,1)+" u/s", 0, 0);
   popMatrix();
 
-  // ------- Indicador de Rumbo (compás simple) -------
+  // Rumbo
   pushMatrix();
   translate(width*0.80, height-80);
   stroke(255);
   noFill();
   ellipse(0,0,120,120);
-  // aguja norte fija en instrumento; el valor numérico refleja rumbo
   stroke(255,0,0);
   line(0,0,0,-50);
   float heading = (degrees(yaw) % 360 + 360) % 360;
@@ -991,33 +958,32 @@ void drawHUD(){
   popMatrix();
 
   popStyle();
-  // Aviso de altura
+  
   if (camY >= 1000) {
     pushStyle();
     textAlign(CENTER, CENTER);
     textSize(24);
-    fill(255, 0, 0); // Texto en rojo
+    fill(255, 0, 0);
     text("ADVERTENCIA: Límite de altura próximo (1200m)", width/2, 50);
     popStyle();
   }
 
-  // ------- Encuadre negro -------
+  // Encuadre negro
   pushStyle();
   rectMode(CORNER);
   noStroke();
-  fill(0); // negro sólido
+  fill(0);
 
   float marginX = width * 0.03;
   float marginY = height * 0.03;
 
-  rect(0, 0, width, marginY);                           // Arriba
-  rect(0, height - marginY, width, marginY);            // Abajo
-  rect(0, marginY, marginX, height - 2*marginY);        // Izquierda
-  rect(width - marginX, marginY, marginX, height - 2*marginY); // Derecha
+  rect(0, 0, width, marginY);
+  rect(0, height - marginY, width, marginY);
+  rect(0, marginY, marginX, height - 2*marginY);
+  rect(width - marginX, marginY, marginX, height - 2*marginY);
 
   popStyle();
 
-  // Restaurar estado 3D
   hint(ENABLE_DEPTH_TEST);
   perspective(PI / 3.0, float(width) / height, 0.1, 10000);
 }
@@ -1028,8 +994,8 @@ void keyPressed(){
   if (key == 's' || key == 'S') moveBackward = true; 
   if (key == 'd' || key == 'D') moveLeft = true;
   if (key == 'a' || key == 'A') moveRight = true;
-  if (key == 'r' || key == 'R') speedUp = true;    // Acelerar
-  if (key == 'f' || key == 'F') speedDown = true;  // Frenar 
+  if (key == 'r' || key == 'R') speedUp = true;
+  if (key == 'f' || key == 'F') speedDown = true;
 }
 
 void keyReleased(){
@@ -1041,45 +1007,63 @@ void keyReleased(){
   if (key == 'f' || key == 'F') speedDown = false;
 }
 
-// =====================================================
-// =============== Clases de Gestos ====================
-// =====================================================
+// ===================== Clases =====================
 class HandData {
+  String label;
   ArrayList<PVector> landmarks;
-  HandData() { landmarks = new ArrayList<PVector>(); }
+  HandData() { 
+    label = "";
+    landmarks = new ArrayList<PVector>(); 
+  }
 }
 
 class HandGestureClassifier {
-  public int classify(HandData hand) {
+  // Simplified classifier for Open (0) and Fist (1) only
+  public int classifySimple(HandData hand) {
     if (hand.landmarks == null || hand.landmarks.size() < 21) return -1;
 
     PVector wrist = hand.landmarks.get(0);
-    PVector thumbTip = hand.landmarks.get(4);
+    
     PVector indexTip = hand.landmarks.get(8);
     PVector middleTip = hand.landmarks.get(12);
     PVector ringTip = hand.landmarks.get(16);
     PVector pinkyTip = hand.landmarks.get(20);
+    
+    PVector indexMCP = hand.landmarks.get(5);
+    PVector middleMCP = hand.landmarks.get(9);
+    PVector ringMCP = hand.landmarks.get(13);
+    PVector pinkyMCP = hand.landmarks.get(17);
 
-    float dThumb = dist(wrist.x, wrist.y, thumbTip.x, thumbTip.y);
-    float dIndex = dist(wrist.x, wrist.y, indexTip.x, indexTip.y);
-    float dMiddle = dist(wrist.x, wrist.y, middleTip.x, middleTip.y);
-    float dRing = dist(wrist.x, wrist.y, ringTip.x, ringTip.y);
-    float dPinky = dist(wrist.x, wrist.y, pinkyTip.x, pinkyTip.y);
+    float indexExtended = dist(indexMCP.x, indexMCP.y, indexTip.x, indexTip.y);
+    float middleExtended = dist(middleMCP.x, middleMCP.y, middleTip.x, middleTip.y);
+    float ringExtended = dist(ringMCP.x, ringMCP.y, ringTip.x, ringTip.y);
+    float pinkyExtended = dist(pinkyMCP.x, pinkyMCP.y, pinkyTip.x, pinkyTip.y);
+    
+    float indexBase = dist(wrist.x, wrist.y, indexMCP.x, indexMCP.y);
+    float middleBase = dist(wrist.x, wrist.y, middleMCP.x, middleMCP.y);
+    float ringBase = dist(wrist.x, wrist.y, ringMCP.x, ringMCP.y);
+    float pinkyBase = dist(wrist.x, wrist.y, pinkyMCP.x, pinkyMCP.y);
+    
+    float avgBase = (indexBase + middleBase + ringBase + pinkyBase) / 4.0;
 
-    float avg = (dIndex + dMiddle + dRing + dPinky) / 4.0;
+    boolean indexOpen = indexExtended > avgBase * 0.7;
+    boolean middleOpen = middleExtended > avgBase * 0.7;
+    boolean ringOpen = ringExtended > avgBase * 0.7;
+    boolean pinkyOpen = pinkyExtended > avgBase * 0.7;
 
-    boolean thumbOpen  = dThumb  > avg * 0.5;
-    boolean indexOpen  = dIndex  > avg * 0.5;
-    boolean middleOpen = dMiddle > avg * 0.5;
-    boolean ringOpen   = dRing   > avg * 0.5;
-    boolean pinkyOpen  = dPinky  > avg * 0.5;
+    int openCount = 0;
+    if (indexOpen) openCount++;
+    if (middleOpen) openCount++;
+    if (ringOpen) openCount++;
+    if (pinkyOpen) openCount++;
 
-    if (indexOpen && middleOpen && ringOpen && pinkyOpen) return 0; // Open
-    else if (indexOpen && middleOpen && ringOpen && !pinkyOpen) return 1; // Fist
-    else if (indexOpen && !middleOpen && !ringOpen && !pinkyOpen) return 2; // Point
-    else if (indexOpen && middleOpen && !ringOpen && !pinkyOpen) return 3; // Peace
-    else if (indexOpen && !middleOpen && !ringOpen && pinkyOpen) return 4; // OK
-    else if (pinkyOpen && !thumbOpen && indexOpen && middleOpen && !ringOpen) return 5; // Rock
+    if (openCount >= 3) {
+      return 0; // Open
+    }
+    
+    if (openCount <= 1) {
+      return 1; // Fist
+    }
 
     return -1;
   }
