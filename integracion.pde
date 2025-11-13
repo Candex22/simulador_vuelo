@@ -19,6 +19,11 @@ int lastValidRightGesture = -1;
 int framesWithoutDetection = 0;
 int maxFramesWithoutDetection = 1; // Tolerancia de ~10 frames sin detección
 String controlStatus = "Sin control";
+int gameState = 0; // 0=Inicio, 1=Volando, 2=Pausado
+boolean waitingForGestureRelease = false;
+int peaceGestureFrameCount = 0;  // NUEVO
+int requiredPeaceFrames = 15;     // NUEVO - frames necesarios para activar
+boolean lastFrameWasPeace = false; // NUEVO
 
 // FPS simple para debug
 int fps = 0;
@@ -169,7 +174,11 @@ void draw(){
   applyTwoHandControl();
 
   // ---- 2) Mundo 3D (tu ciclo original) ----
-  updateCamera();
+  // SOLO actualizar cámara si NO estamos pausados
+  if (gameState == 1) {
+    updateCamera();
+  }
+  
   applyCamera();
 
   int chunkX = floor(camX / chunkSize);
@@ -215,23 +224,78 @@ void draw(){
   drawHUD();
   drawGestureOverlay();
   drawFPS();
+  
+  // Dibujar overlays según el estado
+  if (gameState == 0) {
+    drawStartScreen();
+  } else if (gameState == 2) {
+    drawPauseScreen();
+  }
+  
   calculateFPS();
 }
 
 // ===================== Integración con gestos =====================
 void applyTwoHandControl() {
-  // 0 = Open, 1 = Fist
-  boolean leftValid = (leftHandGesture == 0 || leftHandGesture == 1);
-  boolean rightValid = (rightHandGesture == 0 || rightHandGesture == 1);
+  boolean leftValid = (leftHandGesture == 0 || leftHandGesture == 1 || leftHandGesture == 2);
+  boolean rightValid = (rightHandGesture == 0 || rightHandGesture == 1 || rightHandGesture == 2);
   
+  // Ambas manos en paz - toggle pause/play
+  boolean bothPeace = (leftHandGesture == 2 && rightHandGesture == 2);
+  
+  if (gameState == 0) {
+    // INICIO
+    if (bothPeace) {
+      gameState = 1;
+      waitingForGestureRelease = true;
+      controlStatus = "¡INICIANDO VUELO!";
+    } else {
+      controlStatus = "Haz ✌️ con ambas manos para iniciar";
+    }
+    return;
+  } else if (gameState == 1) {
+    // VOLANDO
+    if (bothPeace && !waitingForGestureRelease) {
+      gameState = 2;
+      waitingForGestureRelease = true;
+      controlStatus = "PAUSADO";
+      moveForward = false;
+      moveBackward = false;
+      moveLeft = false;
+      moveRight = false;
+      return;
+    }
+    
+    if (!bothPeace && waitingForGestureRelease) {
+      waitingForGestureRelease = false;
+    }
+    
+    if (waitingForGestureRelease) {
+      return;
+    }
+  } else if (gameState == 2) {
+    // PAUSADO
+    if (bothPeace && !waitingForGestureRelease) {
+      gameState = 1;
+      waitingForGestureRelease = true;
+      controlStatus = "¡REANUDANDO VUELO!";
+    } else {
+      if (!bothPeace && waitingForGestureRelease) {
+        waitingForGestureRelease = false;
+      }
+      controlStatus = "PAUSADO - Haz ✌️ con ambas manos para continuar";
+    }
+    return;
+  }
+  
+  // Controles normales de vuelo
   if (!leftValid || !rightValid) {
-    // Solo mostrar "Sin control" si han pasado suficientes frames sin detección
+    framesWithoutDetection++;
     if (framesWithoutDetection > maxFramesWithoutDetection) {
       String newStatus = "Sin control detectado";
       if (!newStatus.equals(lastControlStatus)) {
         controlStatus = newStatus;
         lastControlStatus = newStatus;
-        // Reset controls only when we lose detection
         moveForward = false;
         moveBackward = false;
         moveLeft = false;
@@ -241,41 +305,55 @@ void applyTwoHandControl() {
     return;
   }
   
-  // Determinar nuevo estado basado en gestos
+  framesWithoutDetection = 0;
+  
+  // UNA mano en paz = vuelo recto
+  if ((leftHandGesture == 2 && rightHandGesture != 2) || 
+      (rightHandGesture == 2 && leftHandGesture != 2)) {
+    String newStatus = "Vuelo recto (Una mano en paz ✌️)";
+    if (!newStatus.equals(lastControlStatus)) {
+      controlStatus = newStatus;
+      lastControlStatus = newStatus;
+    }
+    moveForward = false;
+    moveBackward = false;
+    moveLeft = false;
+    moveRight = false;
+    return;
+  }
+  
   String newStatus = "Vuelo recto";
   boolean newMoveForward = false;
   boolean newMoveBackward = false;
   boolean newMoveLeft = false;
   boolean newMoveRight = false;
   
-  // Both hands open (0) - Pitch up
+  // Ambas abiertas (0) - Pitch up
   if (leftHandGesture == 0 && rightHandGesture == 0) {
     newStatus = "Cabeceo ARRIBA ↑";
     newMoveBackward = true;
   }
-  // Both hands closed/fist (1) - Pitch down
+  // Ambos puños (1) - Pitch down
   else if (leftHandGesture == 1 && rightHandGesture == 1) {
     newStatus = "Cabeceo ABAJO ↓";
     newMoveForward = true;
   }
-  // Right open + Left closed - Turn right
+  // Derecha abierta + Izquierda puño - Turn right
   else if (rightHandGesture == 0 && leftHandGesture == 1) {
     newStatus = "Giro IZQUIERDA ←";
     newMoveRight = true;
   }
-  // Left open + Right closed - Turn left
+  // Izquierda abierta + Derecha puño - Turn left
   else if (leftHandGesture == 0 && rightHandGesture == 1) {
     newStatus = "Giro DERECHA →";
     newMoveLeft = true;
   }
   
-  // Solo actualizar si cambió el estado
   if (!newStatus.equals(lastControlStatus)) {
     controlStatus = newStatus;
     lastControlStatus = newStatus;
   }
   
-  // Aplicar controles
   moveForward = newMoveForward;
   moveBackward = newMoveBackward;
   moveLeft = newMoveLeft;
@@ -349,6 +427,7 @@ void drawGestureOverlay(){
 String getGestureName(int gestureId) {
   if (gestureId == 0) return "Abierto";
   if (gestureId == 1) return "Puño";
+  if (gestureId == 2) return "Paz ✌️";
   return "---";
 }
 
@@ -987,7 +1066,63 @@ void drawHUD(){
   hint(ENABLE_DEPTH_TEST);
   perspective(PI / 3.0, float(width) / height, 0.1, 10000);
 }
+void drawStartScreen() {
+  hint(DISABLE_DEPTH_TEST);
+  noLights();
+  camera();
+  ortho();
+  
+  fill(0, 220);
+  noStroke();
+  rect(0, 0, width, height);
+  
+  fill(0, 255, 100);
+  textAlign(CENTER, CENTER);
+  textSize(48);
+  text("SIMULADOR DE VUELO", width/2, height/2 - 100);
+  
+  fill(255);
+  textSize(32);
+  text("✌️ Haz el símbolo de PAZ ✌️", width/2, height/2);
+  text("con ambas manos para iniciar", width/2, height/2 + 40);
+  
+  textSize(20);
+  fill(200);
+  text("Controles:", width/2, height/2 + 120);
+  textSize(16);
+  text("Ambas abiertas = Cabeceo arriba", width/2, height/2 + 150);
+  text("Ambos puños = Cabeceo abajo", width/2, height/2 + 175);
+  text("Derecha abierta + Izq puño = Giro derecha", width/2, height/2 + 200);
+  text("Izquierda abierta + Der puño = Giro izquierda", width/2, height/2 + 225);
+  text("Una mano en paz = Vuelo recto", width/2, height/2 + 250);
+  
+  hint(ENABLE_DEPTH_TEST);
+  perspective(PI / 3.0, float(width) / height, 0.1, 10000);
+}
 
+void drawPauseScreen() {
+  hint(DISABLE_DEPTH_TEST);
+  noLights();
+  camera();
+  ortho();
+  
+  fill(0, 180);
+  noStroke();
+  rect(0, 0, width, height);
+  
+  fill(255, 200, 0);
+  textAlign(CENTER, CENTER);
+  textSize(64);
+  text("|| PAUSADO ||", width/2, height/2 - 50);
+  
+  fill(255);
+  textSize(28);
+  text("✌️ Haz el símbolo de PAZ ✌️", width/2, height/2 + 30);
+  text("con ambas manos para continuar", width/2, height/2 + 65);
+  
+  hint(ENABLE_DEPTH_TEST);
+  perspective(PI / 3.0, float(width) / height, 0.1, 10000);
+}
 // ===================== Teclado =====================
 void keyPressed(){
   if (key == 'w' || key == 'W') moveForward = true;  
@@ -1018,7 +1153,6 @@ class HandData {
 }
 
 class HandGestureClassifier {
-  // Simplified classifier for Open (0) and Fist (1) only
   public int classifySimple(HandData hand) {
     if (hand.landmarks == null || hand.landmarks.size() < 21) return -1;
 
@@ -1050,6 +1184,11 @@ class HandGestureClassifier {
     boolean middleOpen = middleExtended > avgBase * 0.7;
     boolean ringOpen = ringExtended > avgBase * 0.7;
     boolean pinkyOpen = pinkyExtended > avgBase * 0.7;
+
+    // GESTO DE PAZ: índice y medio extendidos, anular y meñique cerrados
+    if (indexOpen && middleOpen && !ringOpen && !pinkyOpen) {
+      return 2; // Paz ✌️
+    }
 
     int openCount = 0;
     if (indexOpen) openCount++;
